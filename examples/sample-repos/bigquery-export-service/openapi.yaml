@@ -1,0 +1,42 @@
+openapi: 3.0.3
+info:
+  title: BigQuery Export Service
+  version: 3.0.0
+  description: Cloud Run service that exports datasets from BigQuery to GCS.
+paths:
+  /exports:
+    post:
+      operationId: createExport
+      summary: Start a new BigQuery export job
+      tags: [exports]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "202":
+          description: Export job accepted
+  /exports/{jobId}:
+    get:
+      operationId: getExport
+      summary: Get the status of an export job
+      tags: [exports]
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job status
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

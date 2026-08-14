@@ -1,0 +1,41 @@
+# swagger_gen configuration
+#
+# Run with:  python -m swagger_gen --config config.example.yaml
+#
+# Every repo is analyzed statically (no code is executed). Relative paths are
+# resolved against this file's location.
+
+output:
+  directory: ./swagger-output   # where generated docs are written
+  formats: [yaml, json, html]   # any subset of: yaml, json, html
+  per_repo: true                # one OpenAPI document per repository
+  combined: true                # also emit a single merged "combined" document
+
+# Directories to skip in every repo (in addition to sensible built-in defaults
+# like node_modules, target, .git, venv, ...).
+exclude:
+  - testdata
+  - generated
+
+# List repositories inline...
+repos:
+  - name: user-service
+    path: ./examples/sample-repos/flask-user-service
+    servers:
+      - https://users.internal.example.com
+
+  - name: orders-service
+    path: ./examples/sample-repos/fastapi-orders
+
+  - name: product-catalog
+    path: ./examples/sample-repos/spring-catalog
+    # Optionally pin metadata or force the framework instead of auto-detecting:
+    # version: "1.4.0"
+    # frameworks: [spring]
+
+  - name: bigquery-export
+    path: ./examples/sample-repos/bigquery-export-service
+
+# ...or point to a plain-text file of repo paths (one per line). Both sources
+# are combined. Uncomment to use:
+# repos_file: ./repos.txt

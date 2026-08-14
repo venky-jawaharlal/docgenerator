@@ -1,0 +1,8 @@
+# One repository per line. Blank lines and lines starting with '#' are ignored.
+# Bare path (repo name is derived from the folder name):
+./examples/sample-repos/flask-user-service
+
+# Or give an explicit name with "name = path":
+orders-service = ./examples/sample-repos/fastapi-orders
+catalog        = ./examples/sample-repos/spring-catalog
+bigquery       = ./examples/sample-repos/bigquery-export-service
