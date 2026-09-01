@@ -2,6 +2,9 @@
 swagger-output/
 swagger-output-*/
 
+# Shallow clones of git URL sources
+.swagger-gen-cache/
+
 # Local config (copied from config.example.yaml)
 config.yaml
 repos.txt

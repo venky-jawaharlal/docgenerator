@@ -3,6 +3,11 @@ info:
   title: BigQuery Export Service
   version: 3.0.0
   description: Cloud Run service that exports datasets from BigQuery to GCS.
+# Localhost is a placeholder from local development. swagger_gen drops it when
+# the config supplies a real deployment host (`host` / `servers`).
+servers:
+  - url: http://localhost:8080
+    description: Local process (do not use for Try-it-out against the deployed service)
 paths:
   /exports:
     post:

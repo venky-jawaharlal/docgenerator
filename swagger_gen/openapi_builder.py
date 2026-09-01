@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .models import ApiSpec, Endpoint, Parameter, SecurityScheme
+from .servers import to_openapi as servers_to_openapi
 
 
 def _param_to_openapi(param: Parameter) -> dict[str, Any]:
@@ -117,13 +118,16 @@ def build_openapi(spec: ApiSpec) -> dict[str, Any]:
     }
 
     if spec.servers:
-        doc["servers"] = [{"url": s} for s in spec.servers]
-    elif spec.base_path:
+        doc["servers"] = servers_to_openapi(spec.servers)
+    elif spec.base_path and spec.base_path.startswith(("http://", "https://")):
         doc["servers"] = [{"url": spec.base_path}]
 
     paths: dict[str, Any] = {}
     for ep in sorted(spec.endpoints, key=lambda e: (e.path, e.method)):
-        paths.setdefault(ep.path, {})[ep.method.lower()] = _operation(ep)
+        item = paths.setdefault(ep.path, {})
+        if ep.servers and "servers" not in item:
+            item["servers"] = servers_to_openapi(ep.servers)
+        item[ep.method.lower()] = _operation(ep)
     doc["paths"] = paths
 
     components: dict[str, Any] = {}

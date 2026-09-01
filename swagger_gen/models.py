@@ -46,6 +46,14 @@ class Response:
 
 
 @dataclass
+class Server:
+    """An OpenAPI server entry — the host Try-it-out requests are sent to."""
+
+    url: str
+    description: str = ""
+
+
+@dataclass
 class Endpoint:
     path: str
     method: str  # lower-case http verb: get/post/put/delete/patch...
@@ -62,6 +70,8 @@ class Endpoint:
     deprecated: bool = False
     source_file: str = ""
     source_line: int = 0
+    # Per-operation servers (used in combined docs so each service hits its host).
+    servers: list[Server] = field(default_factory=list)
 
     def key(self) -> tuple[str, str]:
         return (self.path, self.method.lower())
@@ -98,7 +108,7 @@ class ApiSpec:
     version: str = "1.0.0"
     description: str = ""
     base_path: str = ""
-    servers: list[str] = field(default_factory=list)
+    servers: list[Server] = field(default_factory=list)
     endpoints: list[Endpoint] = field(default_factory=list)
     security_schemes: dict[str, SecurityScheme] = field(default_factory=dict)
     schemas: dict[str, Schema] = field(default_factory=dict)

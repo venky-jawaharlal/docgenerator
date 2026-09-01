@@ -1,9 +1,14 @@
 # swagger_gen configuration
 #
-# Run with:  python -m swagger_gen --config config.example.yaml
+# Run with:  python -m swagger_gen --config config.example.yaml --validate
 #
-# Every repo is analyzed statically (no code is executed). Relative paths are
-# resolved against this file's location.
+# Every repo is analyzed statically (no application code is executed). Relative
+# local paths are resolved against this file's location. Git URLs are
+# shallow-cloned into clone_cache/.
+#
+# `host` / `servers` are the URLs Swagger UI uses for Try-it-out. They must be
+# the deployed service, not localhost — otherwise the generated docs will send
+# requests to loopback instead of the real API.
 
 output:
   directory: ./swagger-output   # where generated docs are written
@@ -11,31 +16,51 @@ output:
   per_repo: true                # one OpenAPI document per repository
   combined: true                # also emit a single merged "combined" document
 
+# Where remote git URLs are cloned (gitignored). Relative to this file.
+clone_cache: ./.swagger-gen-cache
+
+# Optional fallback host applied to any repo that does not set its own.
+# default_host: https://api.gateway.example.com
+
 # Directories to skip in every repo (in addition to sensible built-in defaults
 # like node_modules, target, .git, venv, ...).
 exclude:
   - testdata
   - generated
 
-# List repositories inline...
+# List repositories inline. Each entry is a local `path`, a git `url`, or both
+# (a present local directory wins; otherwise the URL is cloned).
 repos:
   - name: user-service
     path: ./examples/sample-repos/flask-user-service
     servers:
-      - https://users.internal.example.com
+      - url: https://users.internal.example.com
+        description: Deployed user service
 
   - name: orders-service
     path: ./examples/sample-repos/fastapi-orders
+    host: https://orders.internal.example.com
 
   - name: product-catalog
     path: ./examples/sample-repos/spring-catalog
+    host: https://catalog.internal.example.com
     # Optionally pin metadata or force the framework instead of auto-detecting:
     # version: "1.4.0"
     # frameworks: [spring]
 
   - name: bigquery-export
     path: ./examples/sample-repos/bigquery-export-service
+    host: https://bigquery-export.internal.example.com
+    # The sample spec ships with a localhost server; swagger_gen replaces it
+    # with this host so Try-it-out does not hit loopback.
 
-# ...or point to a plain-text file of repo paths (one per line). Both sources
-# are combined. Uncomment to use:
+  # Remote git example (uncomment and point at a real repo + its deployed host):
+  # - name: payments-service
+  #   url: https://github.com/example/payments-service.git
+  #   ref: main                    # branch, tag, or commit (optional)
+  #   host: https://payments.example.com
+  #   # path: /already/cloned/payments-service   # optional local override
+
+# ...or point to a plain-text file of local paths and/or git URLs (one per
+# line). Both sources are combined. Uncomment to use:
 # repos_file: ./repos.txt

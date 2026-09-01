@@ -19,8 +19,10 @@ from ..models import (
     Parameter,
     RequestBody,
     Response,
+    Server,
     SecurityScheme,
 )
+from ..servers import normalize_server_url
 from .base import BaseAnalyzer, RepoContext
 
 _HTTP_VERBS = {"get", "post", "put", "delete", "patch", "head", "options", "trace"}
@@ -36,7 +38,7 @@ class ExistingSpecAnalyzer(BaseAnalyzer):
 
     def analyze(self, ctx: RepoContext, spec: ApiSpec) -> None:
         for path in self._spec_files(ctx):
-            data = self._load(path)
+            data = self._load(ctx, path)
             if not isinstance(data, dict) or "paths" not in data:
                 continue
             spec.add_note(f"Imported existing API spec: {ctx.rel(path)}")
@@ -52,9 +54,11 @@ class ExistingSpecAnalyzer(BaseAnalyzer):
         return results
 
     @staticmethod
-    def _load(path: Path):
+    def _load(ctx: RepoContext, path: Path):
         try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
+            text = ctx.read(path)
+            if not text:
+                return None
             if path.suffix.lower() == ".json":
                 return json.loads(text)
             return yaml.safe_load(text)
@@ -64,11 +68,26 @@ class ExistingSpecAnalyzer(BaseAnalyzer):
     def _merge(self, data: dict, spec: ApiSpec) -> None:
         info = data.get("info", {}) or {}
         if info.get("title") and spec.title == spec.name:
-            spec.title = info["title"]
+            spec.title = str(info["title"])[:200]
         if info.get("version"):
-            spec.version = info["version"]
+            spec.version = str(info["version"])[:64]
         if info.get("description") and not spec.description:
-            spec.description = info["description"]
+            spec.description = str(info["description"])[:4000]
+
+        # Import servers only when the user did not configure a deployment host.
+        # Non-http(s) schemes are rejected by normalize_server_url.
+        if not spec.servers:
+            for item in data.get("servers") or []:
+                if isinstance(item, str):
+                    url, description = item, ""
+                elif isinstance(item, dict):
+                    url = str(item.get("url") or "")
+                    description = str(item.get("description") or "")[:200]
+                else:
+                    continue
+                url = normalize_server_url(url)
+                if url:
+                    spec.servers.append(Server(url=url, description=description))
 
         for name, scheme in (
             (data.get("components", {}) or {}).get("securitySchemes", {}) or {}

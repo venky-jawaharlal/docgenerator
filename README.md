@@ -1,12 +1,15 @@
 # swagger_gen — multi-stack Swagger/OpenAPI documentation generator
 
-Point it at a list of local repositories (Java, Python, Cloud Run services,
-etc.) and it will **statically analyze** each one, auto-detect the web
-framework(s) in use, extract the API surface, and emit **OpenAPI 3.0** documents
-plus a browsable **Swagger UI**.
+Point it at **local directories and/or git repository URLs** (Java, Python,
+Cloud Run services, etc.) and it will **statically analyze** each one,
+auto-detect the web framework(s) in use, extract the API surface, and emit
+**OpenAPI 3.0** documents plus a browsable **Swagger UI**.
 
-No code is executed and no network/LLM is required — everything is derived by
-parsing source files.
+Configure the **deployment host** for each service so Swagger UI **Try it out**
+sends requests to the live API instead of localhost.
+
+Source is parsed, not executed. Cloning a git URL is the only network step
+required at generation time.
 
 ## Supported tech stacks
 
@@ -17,7 +20,7 @@ parsing source files.
 | **FastAPI** (Python) | path operations, path/query params, Pydantic request bodies, `Depends`/`Security` + OAuth2/HTTP bearer auth, router prefixes |
 | **Flask** (Python) | `@app.route` + method shortcuts, path/query params, JSON bodies, `session`/`login_required` auth |
 | **Django** (Python) | `urls.py` routes (`path`/`re_path`/`url`) and view names |
-| **Existing OpenAPI/Swagger** | Any `openapi.*` / `swagger.*` (`.yaml`/`.yml`/`.json`) file is imported as-is (highest priority) |
+| **Existing OpenAPI/Swagger** | Any `openapi.*` / `swagger.*` (`.yaml`/`.yml`/`.json`) file is imported as-is (highest priority). Localhost `servers` entries are dropped when you configure a real host. |
 
 Auth/session details (`securitySchemes` such as JWT bearer or session cookies)
 are inferred from the code and attached to the operations that require them.
@@ -28,26 +31,40 @@ are inferred from the code and attached to the operations that require them.
 pip install -r requirements.txt   # only dependency is PyYAML
 ```
 
-Requires Python 3.9+.
+Requires Python 3.9+. Remote git sources also need `git` on `PATH`.
 
 ## Usage
 
 ```bash
-# 1. Copy and edit the example config to point at your repos
+# 1. Copy and edit the example config to point at your repos and their hosts
 cp config.example.yaml config.yaml
 
 # 2. Generate docs
 python -m swagger_gen --config config.yaml
 
-# Quick one-off (no config file):
-python -m swagger_gen --repo /path/to/repoA --repo /path/to/repoB -o ./out
+# Local directories, git URLs, or a mix (no config file):
+python -m swagger_gen \
+  --repo /path/to/repoA \
+  --repo https://github.com/org/repoB.git \
+  --server https://api.example.com \
+  -o ./out
+
+# Pin a branch/tag/commit for git URLs:
+python -m swagger_gen --repo https://github.com/org/repoB.git --ref main \
+  --server https://api.example.com
+
+# Check the spec and that Try-it-out will hit a deployed host:
+python -m swagger_gen --config config.yaml --validate
+
+# Also HTTP-ping each configured host:
+python -m swagger_gen --config config.yaml --validate --ping-servers
 
 # See exactly which endpoints/auth were found:
 python -m swagger_gen --config config.yaml --verbose
 ```
 
-Open `swagger-output/index.html` in a browser to explore all services, or open
-an individual `<service>.html` for a single Swagger UI.
+Open `swagger-output/index.html` in a browser, or follow
+[`TESTING.md`](./TESTING.md) to exercise Try-it-out against the deployed host.
 
 ### CLI options
 
@@ -56,7 +73,13 @@ an individual `<service>.html` for a single Swagger UI.
 | `-c, --config PATH` | YAML config file (default `config.yaml`) |
 | `-o, --output DIR` | Override the output directory |
 | `-f, --formats ...` | Override output formats (`yaml json html`) |
-| `--repo PATH` | Analyze an ad-hoc repo (repeatable); ignores config repos |
+| `--repo PATH_OR_URL` | Local directory or git URL (repeatable); skips config repos |
+| `--ref REF` | Branch, tag, or commit to check out for git `--repo` URLs |
+| `--server URL` | Deployment host for Try-it-out (repeatable). With `--repo`, applied to every source; with `--config`, prepended to each repo's hosts |
+| `--host URL` | Shorthand for a single `--server` |
+| `--validate` | Fail if a document is malformed or has no non-localhost server |
+| `--ping-servers` | HTTP HEAD/GET each **operator-configured** deployment host (not URLs imported from specs). Blocks redirects and cloud-metadata IPs |
+| `--clean-cache` | Delete `.swagger-gen-cache/` after generation (recommended in CI) |
 | `-v, --verbose` | Print every discovered endpoint + notes |
 
 ## Configuration
@@ -72,27 +95,57 @@ output:
   per_repo: true      # one document per repo
   combined: true      # also a single merged document
 
+clone_cache: ./.swagger-gen-cache   # shallow clones of git URLs
+
+# Optional fallback applied to repos that omit host/servers:
+# default_host: https://api.gateway.example.com
+
 repos:
+  # Local checkout
   - name: user-service
     path: /abs/or/relative/path/to/repo
-    servers: [https://users.example.com]   # optional
-    # version: "1.2.0"                       # optional metadata override
-    # frameworks: [spring]                   # optional: skip auto-detection
-    # exclude: [legacy]                       # optional: extra dirs to ignore
+    host: https://users.example.com          # Try-it-out target (not localhost)
+
+  # Remote git (cloned on demand). `ref` is optional.
+  - name: orders-service
+    url: https://github.com/org/orders-service.git
+    ref: main
+    servers:
+      - url: https://orders.example.com
+        description: Production
+      - url: https://orders.staging.example.com
+        description: Staging
+
+  # Both: use the local path when it exists, otherwise clone `url`
+  - name: catalog
+    path: ~/src/product-catalog
+    url: git@github.com:org/product-catalog.git
+    host: https://catalog.example.com
 ```
+
+`host` is a shorthand for a single server URL. `servers` accepts strings or
+`{url, description}` objects. Non-localhost URLs are listed first so Swagger UI
+defaults to the deployed service.
+
+If an imported OpenAPI file only declares `http://localhost:…`, those entries
+are dropped and replaced by the configured host.
 
 ## How it works
 
 ```
-config.yaml ─▶ scanner ─▶ [analyzers per repo] ─▶ ApiSpec (IR) ─▶ OpenAPI builder ─▶ yaml/json/html
+config.yaml ─▶ resolve (local path or git clone) ─▶ scanner ─▶ analyzers
+    ─▶ ApiSpec (IR) ─▶ OpenAPI builder (injects servers) ─▶ yaml/json/html
 ```
 
-1. **scanner** walks each repo once (pruning `node_modules`, `target`, `.git`, …)
+1. **resolve** uses a local `path` when it is a directory; otherwise it
+   shallow-clones `url` (or a git `--repo` argument) into `clone_cache`.
+2. **scanner** walks the tree once (pruning `node_modules`, `target`, `.git`, …)
    and runs every analyzer whose `detect()` matches.
-2. Each **analyzer** emits a framework-agnostic intermediate representation
+3. Each **analyzer** emits a framework-agnostic intermediate representation
    (`ApiSpec` / `Endpoint` / `Parameter` / `SecurityScheme`).
-3. The **builder** turns that into a valid OpenAPI 3.0.3 document; the **output**
-   layer writes YAML/JSON and a self-contained Swagger UI HTML page.
+4. The **builder** turns that into a valid OpenAPI 3.0.3 document with
+   `servers` set to the deployment host; the **output** layer writes YAML/JSON
+   and a self-contained Swagger UI HTML page.
 
 ## Extending to a new stack
 
@@ -105,5 +158,34 @@ of the pipeline is unchanged.
 Static analysis is heuristic. Dynamically registered routes, heavy
 metaprogramming, and non-annotated request/response bodies may be missed or only
 partially typed. Where a repo already ships a hand-written OpenAPI spec, that
-file is imported verbatim and takes priority. Django routes have no HTTP verb in
+file is imported verbatim and takes priority (except localhost `servers`, which
+are replaced by your configured host). Django routes have no HTTP verb in
 the URLconf, so they are documented as `GET` with a note.
+
+Private git URLs use whatever credentials `git` already has (SSH agent, credential
+helper). The generator never prompts for a password. Tokens embedded in clone URLs
+are redacted from logs.
+
+Combined documents attach each service's host at the path level. If two services
+share the same path, prefer the per-service HTML for Try-it-out.
+
+## Security notes
+
+- **Static analysis only** — cloned and local source is parsed, never executed.
+  Git hooks are disabled and checkouts are created with `core.symlinks=false`.
+- **Deployment hosts** — OpenAPI `servers` accept `http`/`https` only. `file://`,
+  `javascript:`, and similar schemes are dropped. Localhost imported from a spec
+  is replaced by your configured host.
+- **`--ping-servers`** probes only hosts you set in config/CLI, does not follow
+  redirects, and refuses loopback/cloud-metadata targets. Do not point it at
+  untrusted URLs.
+- **Generated HTML** escapes repo-derived strings, does not persist Try-it-out
+  credentials in `localStorage`, and does not submit the spec to Swagger's public
+  validator.
+- **Clone cache** is mode `0700` and gitignored. Use `--clean-cache` on shared CI
+  agents so private trees are not left behind.
+
+## Testing the generated docs
+
+See [`TESTING.md`](./TESTING.md) for serving the UI, using Try-it-out against
+the deployed host, curl examples, CORS/auth notes, and troubleshooting.

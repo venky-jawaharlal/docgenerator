@@ -9,7 +9,6 @@ bodies and session/login-based auth are inferred heuristically.
 from __future__ import annotations
 
 import ast
-from pathlib import Path
 
 from ..models import (
     IN_COOKIE,

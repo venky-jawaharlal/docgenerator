@@ -1,8 +1,12 @@
 # One repository per line. Blank lines and lines starting with '#' are ignored.
-# Bare path (repo name is derived from the folder name):
+# Bare local path (repo name is derived from the folder name):
 ./examples/sample-repos/flask-user-service
 
 # Or give an explicit name with "name = path":
 orders-service = ./examples/sample-repos/fastapi-orders
 catalog        = ./examples/sample-repos/spring-catalog
 bigquery       = ./examples/sample-repos/bigquery-export-service
+
+# Git URLs work the same way (cloned on demand). Deployment hosts still belong
+# in the YAML config (`host` / `servers`) or on the CLI (`--server`).
+# payments = https://github.com/example/payments-service.git

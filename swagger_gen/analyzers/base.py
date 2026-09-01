@@ -20,8 +20,11 @@ DEFAULT_EXCLUDES = {
     ".git", ".hg", ".svn", "node_modules", "venv", ".venv", "env", "__pycache__",
     "target", "build", "dist", "out", ".gradle", ".idea", ".mvn", "bin",
     "site-packages", ".tox", ".pytest_cache", ".mypy_cache", "vendor",
-    "coverage", ".next", ".terraform",
+    "coverage", ".next", ".terraform", ".swagger-gen-cache",
 }
+
+# Skip oversized files (OpenAPI docs, sources) to bound memory / YAML cost.
+MAX_READ_BYTES = 8 * 1024 * 1024
 
 
 class RepoContext:
@@ -34,11 +37,30 @@ class RepoContext:
         self._text_cache: dict[Path, str] = {}
 
     def _walk(self) -> Iterator[Path]:
-        for dirpath, dirnames, filenames in os.walk(self.root):
-            # Prune excluded directories in-place so os.walk skips them.
-            dirnames[:] = [d for d in dirnames if d not in self.excludes]
+        root = self.root.resolve()
+        for dirpath, dirnames, filenames in os.walk(self.root, followlinks=False):
+            # Prune excluded directories and any directory symlink.
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if d not in self.excludes and not Path(dirpath, d).is_symlink()
+            ]
             for name in filenames:
-                yield Path(dirpath) / name
+                path = Path(dirpath) / name
+                if self._is_safe_file(path, root):
+                    yield path
+
+    def _is_safe_file(self, path: Path, root: Path | None = None) -> bool:
+        """Skip symlinks and anything that resolves outside the repo root."""
+        try:
+            if path.is_symlink():
+                return False
+            resolved = path.resolve()
+            base = root or self.root.resolve()
+            resolved.relative_to(base)
+            return True
+        except (OSError, ValueError):
+            return False
 
     def files_with_ext(self, *exts: str) -> list[Path]:
         key = "|".join(sorted(e.lower() for e in exts))
@@ -56,9 +78,16 @@ class RepoContext:
     def read(self, path: Path) -> str:
         if path not in self._text_cache:
             try:
-                self._text_cache[path] = path.read_text(
-                    encoding="utf-8", errors="ignore"
-                )
+                if not self._is_safe_file(path):
+                    self._text_cache[path] = ""
+                else:
+                    size = path.stat().st_size
+                    if size > MAX_READ_BYTES:
+                        self._text_cache[path] = ""
+                    else:
+                        self._text_cache[path] = path.read_text(
+                            encoding="utf-8", errors="ignore"
+                        )
             except OSError:
                 self._text_cache[path] = ""
         return self._text_cache[path]

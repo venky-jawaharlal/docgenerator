@@ -1,0 +1,260 @@
+"""Resolve a repository from a local path or a remote git URL.
+
+Remote sources are shallow-cloned into a local cache so the rest of the
+pipeline can scan files as usual. ``git`` must be on PATH.
+
+Clones never run repository hooks, never create checkouts with symlinks, and
+reject option-like URLs/refs so git argv cannot be steered.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+from .servers import redact_url
+
+_GIT_URL_RE = re.compile(
+    r"""^(
+        (?:git\+)?(?:https?|ssh|file):// |
+        git@ |
+        (?:github|gitlab|bitbucket)\.com[/:]
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Refs passed to ``git clone --branch`` / ``git checkout``. No leading dash
+# (would be parsed as a git option) and no path traversal.
+_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
+
+_UNSAFE_GIT_ENV = {
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_SSH_COMMAND",
+    "GIT_PROXY_COMMAND",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_DIFF_OPTS",
+    "GIT_EDITOR",
+    "GIT_SEQUENCE_EDITOR",
+    "GIT_PAGER",
+    "GIT_TEMPLATE_DIR",
+    "GIT_EXEC_PATH",
+    "GIT_NAMESPACE",
+    "GIT_CONFIG",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_TRACE",
+    "GIT_TRACE2",
+    "GIT_TRACE2_EVENT",
+}
+
+_CLONE_TIMEOUT_SEC = 180
+_FETCH_TIMEOUT_SEC = 120
+
+
+class SourceError(Exception):
+    pass
+
+
+def looks_like_git_url(value: str) -> bool:
+    raw = (value or "").strip()
+    if not raw or raw.startswith("-") or os.path.isdir(os.path.expanduser(raw)):
+        return False
+    if raw.lower().startswith("git://"):
+        return False
+    if raw.endswith(".git"):
+        return True
+    return bool(_GIT_URL_RE.match(raw))
+
+
+def repo_name_from_url(url: str) -> str:
+    cleaned = (url or "").strip().rstrip("/")
+    if cleaned.endswith(".git"):
+        cleaned = cleaned[:-4]
+    # git@host:org/repo  or  ssh://git@host/org/repo
+    if "://" not in cleaned and ":" in cleaned:
+        cleaned = cleaned.split(":", 1)[-1]
+    else:
+        cleaned = re.sub(r"^[a-z+]+://[^/]+/", "", cleaned, flags=re.I)
+    name = cleaned.rstrip("/").split("/")[-1]
+    return name or "repo"
+
+
+def _normalize_git_url(url: str) -> str:
+    raw = (url or "").strip()
+    if raw.startswith("git+") and "://" in raw:
+        raw = raw[4:]
+    if raw.startswith(("github.com/", "gitlab.com/", "bitbucket.org/")):
+        raw = "https://" + raw
+    return raw
+
+
+def _assert_safe_git_url(url: str) -> None:
+    raw = (url or "").strip()
+    if not raw or raw.startswith("-") or "\n" in raw or "\x00" in raw:
+        raise SourceError("Invalid git URL.")
+    if raw.lower().startswith("git://"):
+        raise SourceError(
+            "The unencrypted git:// protocol is not allowed. Use https or ssh."
+        )
+    if not looks_like_git_url(raw) and not raw.lower().startswith(
+        ("https://", "http://", "ssh://", "file://", "git@")
+    ):
+        raise SourceError(f"Unsupported git URL: {redact_url(raw)}")
+
+
+def _assert_safe_ref(ref: str) -> None:
+    if not ref:
+        return
+    if (
+        ref.startswith("-")
+        or ".." in ref
+        or ref.startswith("/")
+        or "//" in ref
+        or "\n" in ref
+        or "\x00" in ref
+        or not _REF_RE.fullmatch(ref)
+    ):
+        raise SourceError(f"Invalid git ref: {ref!r}")
+
+
+def _git_available() -> bool:
+    return shutil.which("git") is not None
+
+
+def _git_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in _UNSAFE_GIT_ENV:
+        env.pop(key, None)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = "echo"
+    env["GIT_PROTOCOL_FROM_USER"] = "0"
+    return env
+
+
+def _run_git(
+    args: list[str],
+    cwd: Path | None = None,
+    timeout: int = _FETCH_TIMEOUT_SEC,
+) -> subprocess.CompletedProcess:
+    env = _git_env()
+    # Never run repo hooks; never materialize symlinks from untrusted trees.
+    cmd = [
+        "git",
+        "-c", "core.hooksPath=/dev/null",
+        "-c", "core.symlinks=false",
+        *args,
+    ]
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        stderr = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        return subprocess.CompletedProcess(
+            cmd, 124, stdout, stderr or f"git timed out after {timeout}s"
+        )
+
+
+def _chmod_private(path: Path) -> None:
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+
+
+def _cache_dir_for(url: str, ref: str | None, cache_root: Path) -> Path:
+    key = f"{url}|{ref or ''}"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", repo_name_from_url(url)).strip("-") or "repo"
+    return cache_root / f"{slug}-{digest}"
+
+
+def _sanitize_git_output(text: str, url: str) -> str:
+    redacted = redact_url(url)
+    blob = (text or "").strip()
+    if url:
+        blob = blob.replace(url, redacted)
+    # Also strip any remaining user:password@ patterns.
+    blob = re.sub(r"://[^/\s:@]+:[^/\s@]+@", "://****@", blob)
+    return blob[:2000]
+
+
+def clone_or_update(url: str, ref: str | None, cache_root: Path) -> Path:
+    """Shallow-clone ``url`` (optional ``ref``) into ``cache_root`` and return the path.
+
+    Reuses an existing clone of the same URL+ref when present. Private repos
+    rely on git's already-configured credentials (helper, SSH agent, etc.).
+    """
+    if not _git_available():
+        raise SourceError(
+            "git is required to clone remote repositories. "
+            "Install git, or point the config at a local path instead."
+        )
+    url = _normalize_git_url(url)
+    _assert_safe_git_url(url)
+    _assert_safe_ref(ref or "")
+
+    cache_root.mkdir(parents=True, exist_ok=True)
+    _chmod_private(cache_root)
+
+    dest = _cache_dir_for(url, ref, cache_root)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    if (dest / ".git").is_dir():
+        fetch_args = ["fetch", "--depth", "1", "origin"]
+        if ref:
+            fetch_args.append(ref)
+        fetched = _run_git(fetch_args, cwd=dest, timeout=_FETCH_TIMEOUT_SEC)
+        if fetched.returncode == 0:
+            target = ref or "FETCH_HEAD"
+            checked = _run_git(["checkout", "--force", target], cwd=dest)
+            if checked.returncode == 0:
+                _chmod_private(dest)
+                return dest
+        shutil.rmtree(dest, ignore_errors=True)
+
+    template = cache_root / ".empty-template"
+    template.mkdir(parents=True, exist_ok=True)
+
+    clone_args = ["clone", "--depth", "1", f"--template={template}"]
+    if ref:
+        clone_args += ["--branch", ref]
+    clone_args += [url, str(dest)]
+    cloned = _run_git(clone_args, timeout=_CLONE_TIMEOUT_SEC)
+    if cloned.returncode == 0:
+        _chmod_private(dest)
+        return dest
+
+    # ``--branch`` only works for branches/tags. Retry without it for SHAs.
+    if ref:
+        shutil.rmtree(dest, ignore_errors=True)
+        cloned = _run_git(
+            ["clone", f"--template={template}", url, str(dest)],
+            timeout=_CLONE_TIMEOUT_SEC,
+        )
+        if cloned.returncode == 0:
+            checked = _run_git(["checkout", "--force", ref], cwd=dest)
+            if checked.returncode == 0:
+                _chmod_private(dest)
+                return dest
+            raise SourceError(
+                f"Cloned {redact_url(url)} but could not check out the requested ref. "
+                f"{_sanitize_git_output(checked.stderr or checked.stdout, url)}"
+            )
+
+    detail = _sanitize_git_output(cloned.stderr or cloned.stdout, url) or "git clone failed"
+    raise SourceError(f"Failed to clone {redact_url(url)}: {detail}")
