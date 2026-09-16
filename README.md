@@ -5,8 +5,10 @@ Cloud Run services, etc.) and it will **statically analyze** each one,
 auto-detect the web framework(s) in use, extract the API surface, and emit
 **OpenAPI 3.0** documents plus a browsable **Swagger UI**.
 
-Configure the **deployment host** for each service so Swagger UI **Try it out**
-sends requests to the live API instead of localhost.
+Configure the **deployment host** and **authentication** for each service so
+Swagger UI **Try it out** and `--check-api` send requests to the live API
+(with a bearer token, basic credentials, an API key, or an OAuth2 access
+token) instead of localhost.
 
 Source is parsed, not executed. Cloning a git URL is the only network step
 required at generation time.
@@ -56,7 +58,12 @@ python -m swagger_gen --repo https://github.com/org/repoB.git --ref main \
 # Check the spec and that Try-it-out will hit a deployed host:
 python -m swagger_gen --config config.yaml --validate
 
-# Also HTTP-ping each configured host:
+# Live check against the deployed host (export tokens / IdP credentials first):
+export ORDERS_USER=...
+export ORDERS_PASSWORD=...
+python -m swagger_gen --config config.yaml --validate --check-api
+
+# Also HTTP-ping each configured host (sends auth headers when configured):
 python -m swagger_gen --config config.yaml --validate --ping-servers
 
 # See exactly which endpoints/auth were found:
@@ -77,6 +84,18 @@ Open `swagger-output/index.html` in a browser, or follow
 | `--ref REF` | Branch, tag, or commit to check out for git `--repo` URLs |
 | `--server URL` | Deployment host for Try-it-out (repeatable). With `--repo`, applied to every source; with `--config`, prepended to each repo's hosts |
 | `--host URL` | Shorthand for a single `--server` |
+| `--auth-type` | `bearer` / `jwt` / `basic` / `apikey` / `header` / `oauth2` for the live instance |
+| `--token-env NAME` | Env var with a bearer token or API key (preferred over `--token`) |
+| `--username-env` / `--password-env` | Env vars for HTTP Basic or OAuth2 password-grant credentials |
+| `--api-key-env NAME` | Env var with an API key |
+| `--auth-header NAME` | Header for `apikey` / `header` auth (default `X-API-Key`) |
+| `--token-url URL` | OAuth2 token endpoint used to fetch an access token for live checks |
+| `--auth-grant` | `client_credentials` or `password` (used with `--token-url`) |
+| `--client-id-env` / `--client-secret-env` | Env vars for the OAuth2 client |
+| `--scope` | Scope string sent to the token endpoint |
+| `--probe-path PATH` | Path used by `--check-api` (default `/`) |
+| `--check-api` | GET the probe path on each configured host using configured auth |
+| `--embed-auth` | Pre-authorize generated HTML (do not publish those files) |
 | `--validate` | Fail if a document is malformed or has no non-localhost server |
 | `--ping-servers` | HTTP HEAD/GET each **operator-configured** deployment host (not URLs imported from specs). Blocks redirects and cloud-metadata IPs |
 | `--clean-cache` | Delete `.swagger-gen-cache/` after generation (recommended in CI) |
@@ -105,6 +124,17 @@ repos:
   - name: user-service
     path: /abs/or/relative/path/to/repo
     host: https://users.example.com          # Try-it-out target (not localhost)
+    auth:
+      type: bearer
+      token_env: USERS_BEARER_TOKEN         # never commit the token itself
+      apply_to: all                         # send auth on every Try-it-out call
+      probe_path: /health
+      # OAuth2 alternative (fetches a token at --check-api time):
+      # type: oauth2
+      # grant: client_credentials
+      # token_url: https://idp.example.com/oauth/token
+      # client_id_env: USERS_CLIENT_ID
+      # client_secret_env: USERS_CLIENT_SECRET
 
   # Remote git (cloned on demand). `ref` is optional.
   - name: orders-service
@@ -126,6 +156,26 @@ repos:
 `host` is a shorthand for a single server URL. `servers` accepts strings or
 `{url, description}` objects. Non-localhost URLs are listed first so Swagger UI
 defaults to the deployed service.
+
+`auth` declares how the **deployed** instance authenticates. Supported types:
+
+| `type` | Credentials | Sent as |
+| --- | --- | --- |
+| `bearer` / `jwt` | `token_env` or `token` (`${VAR}` expanded). Optional `token_url` to fetch a token | `Authorization: Bearer …` |
+| `basic` | `username_env` + `password_env` | HTTP Basic |
+| `apikey` | `api_key_env` | Header (`X-API-Key` or `header:`) |
+| `header` | `token_env` + `header:` | Custom header |
+| `oauth2` | `token_url` + `client_id_env`/`client_secret_env` (`grant: client_credentials`) or `username_env`/`password_env` (`grant: password`) | Fetches `access_token`, then `Authorization: Bearer …` |
+
+`apply_to: all` (default) attaches the scheme to every operation so Try-it-out
+sends credentials after you click **Authorize** (or after `--embed-auth`).
+`apply_to: detected` attaches it only to operations the analyzer already marked
+as secured. `apply_to: none` documents the scheme without attaching it.
+
+Secrets are resolved from the environment at generate/check time and are **not**
+written into OpenAPI YAML/JSON. Inline values may use `${VAR}`; a bare `$VAR`
+is expanded only when that variable is set, so a password like `p$ssword` is
+left intact.
 
 If an imported OpenAPI file only declares `http://localhost:…`, those entries
 are dropped and replaced by the configured host.
@@ -179,6 +229,10 @@ share the same path, prefer the per-service HTML for Try-it-out.
 - **`--ping-servers`** probes only hosts you set in config/CLI, does not follow
   redirects, and refuses loopback/cloud-metadata targets. Do not point it at
   untrusted URLs.
+- **Auth secrets** stay in environment variables. OpenAPI YAML/JSON never
+  contain tokens or client secrets. `--embed-auth` / `auth.embed: true` writes
+  them only into local HTML — do not publish that output. OAuth2 `token_url`
+  fetches do not follow redirects and refuse loopback/cloud-metadata hosts.
 - **Generated HTML** escapes repo-derived strings, does not persist Try-it-out
   credentials in `localStorage`, and does not submit the spec to Swagger's public
   validator.

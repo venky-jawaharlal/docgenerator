@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .analyzers import ALL_ANALYZERS, ANALYZERS_BY_NAME, RepoContext
+from .auth import apply_auth_to_spec
 from .config import Config, RepoConfig
 from .git_source import SourceError, clone_or_update, looks_like_git_url
 from .models import ApiSpec
@@ -97,6 +98,8 @@ def scan_repo(repo: RepoConfig, global_exclude: list[str], cache_root: Path) -> 
                 + ", ".join(s.url for s in dropped)
                 + "). Set `host` or `servers` in config to the deployed service."
             )
+
+    apply_auth_to_spec(spec, repo.auth)
 
     if not spec.endpoints and not spec.detected_frameworks:
         spec.add_note(

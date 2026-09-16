@@ -55,10 +55,37 @@ def validate_openapi_doc(doc: dict[str, Any], *, require_remote_server: bool = T
             f"({', '.join(redact_url(u) for u in local)}); "
             "Try-it-out will not hit a deployed host"
         )
+
+    schemes = ((doc.get("components") or {}).get("securitySchemes")) or {}
+    referenced: set[str] = set()
+    for req in doc.get("security") or []:
+        if isinstance(req, dict):
+            referenced.update(req.keys())
+    if isinstance(paths, dict):
+        for item in paths.values():
+            if not isinstance(item, dict):
+                continue
+            for op in item.values():
+                if not isinstance(op, dict):
+                    continue
+                for req in op.get("security") or []:
+                    if isinstance(req, dict):
+                        referenced.update(req.keys())
+    missing = sorted(name for name in referenced if name not in schemes)
+    if missing:
+        issues.append(
+            "operations reference security schemes that are not defined: "
+            + ", ".join(missing)
+        )
     return issues
 
 
-def ping_url(url: str, timeout: float = _PING_TIMEOUT_SEC) -> tuple[bool, str]:
+def ping_url(
+    url: str,
+    timeout: float = _PING_TIMEOUT_SEC,
+    extra_headers: dict[str, str] | None = None,
+    method: str | None = None,
+) -> tuple[bool, str]:
     """Reachability check against an operator-configured http(s) host.
 
     Does not follow redirects, does not probe cloud metadata, and never opens
@@ -73,14 +100,25 @@ def ping_url(url: str, timeout: float = _PING_TIMEOUT_SEC) -> tuple[bool, str]:
 
     opener = urllib.request.build_opener(_NoRedirectHandler)
     headers = {"User-Agent": "swagger_gen-host-check"}
+    if extra_headers:
+        headers.update(extra_headers)
     last = f"unreachable: {safe}"
-    for method in ("HEAD", "GET"):
-        req = urllib.request.Request(target, method=method, headers=headers)
+    methods = (method.upper(),) if method else ("HEAD", "GET")
+    for verb in methods:
+        req = urllib.request.Request(target, method=verb, headers=headers)
         try:
             with opener.open(req, timeout=timeout) as resp:
-                return True, f"{resp.status} {method} {safe}"
+                return True, f"{resp.status} {verb} {safe}"
         except urllib.error.HTTPError as exc:
-            return True, f"{exc.code} {method} {safe}"
+            return True, f"{exc.code} {verb} {safe}"
         except Exception as exc:
             last = f"{type(exc).__name__}: {exc}"
     return False, last
+
+
+def join_host_path(host: str, path: str) -> str:
+    base = normalize_server_url(host).rstrip("/")
+    suffix = "/" + (path or "").lstrip("/")
+    if suffix == "/":
+        return base or host
+    return f"{base}{suffix}"

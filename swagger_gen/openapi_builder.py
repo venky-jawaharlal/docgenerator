@@ -122,6 +122,9 @@ def build_openapi(spec: ApiSpec) -> dict[str, Any]:
     elif spec.base_path and spec.base_path.startswith(("http://", "https://")):
         doc["servers"] = [{"url": spec.base_path}]
 
+    if spec.default_security:
+        doc["security"] = [{name: []} for name in dict.fromkeys(spec.default_security)]
+
     paths: dict[str, Any] = {}
     for ep in sorted(spec.endpoints, key=lambda e: (e.path, e.method)):
         item = paths.setdefault(ep.path, {})

@@ -19,6 +19,7 @@ from typing import Optional
 
 import yaml
 
+from .auth import AuthConfig, parse_auth_entry
 from .git_source import looks_like_git_url, repo_name_from_url
 from .models import Server
 from .servers import merge_servers, parse_server_entries, servers_from_host
@@ -47,6 +48,7 @@ class RepoConfig:
     base_path: Optional[str] = None
     host: Optional[str] = None
     servers: list[Server] = field(default_factory=list)
+    auth: Optional[AuthConfig] = None
     # Force a set of frameworks instead of auto-detecting.
     frameworks: Optional[list[str]] = None
     # Extra directories (relative to repo) to skip during scanning.
@@ -64,6 +66,7 @@ class Config:
     config_dir: str = "."
     clone_cache: str = DEFAULT_CLONE_CACHE
     default_servers: list[Server] = field(default_factory=list)
+    default_auth: Optional[AuthConfig] = None
 
 
 class ConfigError(Exception):
@@ -125,10 +128,13 @@ def _apply_servers(repo: RepoConfig, extra: list[Server] | None = None) -> None:
     repo.servers = declared
 
 
-def _parse_repo_entry(entry, default_servers: list[Server]) -> RepoConfig:
+def _parse_repo_entry(
+    entry, default_servers: list[Server], default_auth: AuthConfig | None = None
+) -> RepoConfig:
     if isinstance(entry, str):
         repo = _repo_from_source(os.path.expanduser(entry))
         _apply_servers(repo, default_servers)
+        repo.auth = default_auth
         return repo
     if not isinstance(entry, dict):
         raise ConfigError(f"Invalid repo entry: {entry!r}")
@@ -155,6 +161,7 @@ def _parse_repo_entry(entry, default_servers: list[Server]) -> RepoConfig:
         base_path=entry.get("base_path"),
         host=str(entry["host"]) if entry.get("host") else None,
         servers=parse_server_entries(entry.get("servers")),
+        auth=parse_auth_entry(entry.get("auth"), default_auth),
         frameworks=entry.get("frameworks"),
         exclude=list(entry.get("exclude", []) or []),
     )
@@ -190,10 +197,11 @@ def load_config(config_path: str) -> Config:
         servers_from_host(data.get("default_host"), description="Default deployed host"),
         parse_server_entries(data.get("default_servers") or data.get("servers")),
     )
+    default_auth = parse_auth_entry(data.get("default_auth") or data.get("auth"))
 
     repos: list[RepoConfig] = []
     for entry in data.get("repos", []) or []:
-        repos.append(_parse_repo_entry(entry, default_servers))
+        repos.append(_parse_repo_entry(entry, default_servers, default_auth))
 
     repos_file = data.get("repos_file")
     if repos_file:
@@ -202,6 +210,8 @@ def load_config(config_path: str) -> Config:
             rf = config_dir / rf
         for repo in _load_repos_file(rf):
             _apply_servers(repo, default_servers)
+            if default_auth and not repo.auth:
+                repo.auth = default_auth
             repos.append(repo)
 
     if not repos:
@@ -226,4 +236,5 @@ def load_config(config_path: str) -> Config:
         config_dir=str(config_dir.resolve()),
         clone_cache=clone_cache,
         default_servers=default_servers,
+        default_auth=default_auth,
     )

@@ -30,6 +30,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   <script src="https://unpkg.com/swagger-ui-dist@__VER__/swagger-ui-standalone-preset.js"></script>
   <script>
     const spec = __SPEC_JSON__;
+    const authPrefill = __AUTH_PREFILL__;
     window.ui = SwaggerUIBundle({
       spec: spec,
       dom_id: '#swagger-ui',
@@ -38,7 +39,27 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       tryItOutEnabled: true,
       presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
       layout: 'BaseLayout',
-      validatorUrl: null
+      validatorUrl: null,
+      onComplete: function() {
+        if (!authPrefill || !authPrefill.schemes || !window.ui) return;
+        Object.keys(authPrefill.schemes).forEach(function(name) {
+          var cfg = authPrefill.schemes[name];
+          if (cfg.type === 'basic') {
+            window.ui.preauthorizeBasic(name, cfg.username || '', cfg.password || '');
+          } else if (cfg.value) {
+            window.ui.preauthorizeApiKey(name, cfg.value);
+          }
+        });
+      },
+      requestInterceptor: function(req) {
+        if (authPrefill && authPrefill.header && authPrefill.header.name) {
+          req.headers = req.headers || {};
+          if (!req.headers[authPrefill.header.name]) {
+            req.headers[authPrefill.header.name] = authPrefill.header.value;
+          }
+        }
+        return req;
+      }
     });
   </script>
 </body>
@@ -73,6 +94,7 @@ _INDEX_TEMPLATE = """<!DOCTYPE html>
     .count { color: #34d399; font-weight: 600; }
     .host { color: #7dd3fc; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
             font-size: 12px; margin-top: 10px; word-break: break-all; }
+    .auth { color: #fcd34d; font-size: 12px; margin-top: 6px; }
   </style>
 </head>
 <body>
@@ -121,6 +143,7 @@ def write_spec(
     out_dir: Path,
     base_name: str,
     formats: list[str],
+    auth_prefill: dict[str, Any] | None = None,
 ) -> dict[str, Path]:
     """Write ``doc`` in each requested format. Returns {format: path}."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -146,6 +169,7 @@ def write_spec(
             _HTML_TEMPLATE.replace("__TITLE__", title)
             .replace("__VER__", SWAGGER_UI_VERSION)
             .replace("__SPEC_JSON__", _spec_json(doc))
+            .replace("__AUTH_PREFILL__", _spec_json(auth_prefill or {}))
         )
         path.write_text(html_page, encoding="utf-8")
         written["html"] = path
@@ -176,11 +200,14 @@ def write_index(
             f'<div class="host">{_esc(hosts[0], 200)}</div>' if hosts else
             '<div class="host">No deployment host configured</div>'
         )
+        auth_label = entry.get("auth") or ""
+        auth_html = f'<div class="auth">Auth: {_esc(auth_label, 80)}</div>' if auth_label else ""
         card_inner = (
             f'<div class="name">{title}</div>'
             f'<div class="meta"><span class="count">{int(entry["endpoint_count"])}</span>'
             f' endpoints &middot; v{version}</div>'
             f'{host_html}'
+            f'{auth_html}'
             f'<div class="tags">{tags}</div>'
         )
         if href:

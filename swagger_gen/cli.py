@@ -13,13 +13,21 @@ import copy
 import sys
 from pathlib import Path
 
+from .auth import (
+    auth_from_cli,
+    describe_auth,
+    has_credentials,
+    missing_credential_hint,
+    request_headers,
+    swagger_prefill,
+)
 from .config import Config, ConfigError, OutputConfig, RepoConfig, load_config
 from .git_source import looks_like_git_url, repo_name_from_url
 from .openapi_builder import build_openapi
 from .output import write_index, write_spec
 from .scanner import cache_root, scan_all
 from .servers import merge_servers, parse_server_entries, redact_url, servers_from_host
-from .validate import ping_url, validate_openapi_doc
+from .validate import join_host_path, ping_url, validate_openapi_doc
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -66,6 +74,72 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Shorthand for a single --server URL.",
     )
     p.add_argument(
+        "--auth-type",
+        choices=["bearer", "jwt", "basic", "apikey", "header", "oauth2"],
+        help="Auth mechanism for the deployed host (applied to every repo).",
+    )
+    p.add_argument(
+        "--token-env",
+        help="Environment variable holding a bearer token or API key.",
+    )
+    p.add_argument(
+        "--token",
+        help="Bearer token or API key value (prefer --token-env so it stays out of the process list).",
+    )
+    p.add_argument(
+        "--username-env",
+        help="Environment variable holding the Basic-auth or OAuth2 password-grant username.",
+    )
+    p.add_argument(
+        "--password-env",
+        help="Environment variable holding the Basic-auth or OAuth2 password-grant password.",
+    )
+    p.add_argument(
+        "--api-key-env",
+        help="Environment variable holding an API key.",
+    )
+    p.add_argument(
+        "--auth-header",
+        help="Header name for --auth-type apikey/header (default X-API-Key / Authorization).",
+    )
+    p.add_argument(
+        "--token-url",
+        help="OAuth2 token endpoint. Fetches an access token for --check-api / --ping-servers.",
+    )
+    p.add_argument(
+        "--auth-grant",
+        choices=["client_credentials", "password"],
+        help="OAuth2 grant used with --token-url (default: client_credentials, or password if username_env is set).",
+    )
+    p.add_argument(
+        "--client-id-env",
+        help="Environment variable holding the OAuth2 client id.",
+    )
+    p.add_argument(
+        "--client-secret-env",
+        help="Environment variable holding the OAuth2 client secret.",
+    )
+    p.add_argument(
+        "--scope",
+        help="OAuth2 scope string sent to the token endpoint.",
+    )
+    p.add_argument(
+        "--probe-path",
+        help="Path used by --check-api (e.g. /health). Default: /",
+    )
+    p.add_argument(
+        "--embed-auth", action="store_true",
+        help="Pre-authorize Swagger UI HTML with resolved credentials (do not publish the HTML).",
+    )
+    p.add_argument(
+        "--no-embed-auth", action="store_true",
+        help="Never write credentials into generated HTML (default).",
+    )
+    p.add_argument(
+        "--check-api", action="store_true",
+        help="GET the probe path on each configured host using the configured auth.",
+    )
+    p.add_argument(
         "--validate", action="store_true",
         help="Check each generated document (structure + deployed server present).",
     )
@@ -93,8 +167,31 @@ def _cli_servers(args):
     )
 
 
+def _cli_auth(args):
+    embed = True if args.embed_auth else False
+    if args.no_embed_auth:
+        embed = False
+    return auth_from_cli(
+        getattr(args, "auth_type", None),
+        token=getattr(args, "token", None),
+        token_env=getattr(args, "token_env", None),
+        username_env=getattr(args, "username_env", None),
+        password_env=getattr(args, "password_env", None),
+        api_key_env=getattr(args, "api_key_env", None),
+        header=getattr(args, "auth_header", None),
+        probe_path=getattr(args, "probe_path", None),
+        embed=embed if (args.embed_auth or args.no_embed_auth or getattr(args, "auth_type", None)) else None,
+        token_url=getattr(args, "token_url", None),
+        grant=getattr(args, "auth_grant", None),
+        client_id_env=getattr(args, "client_id_env", None),
+        client_secret_env=getattr(args, "client_secret_env", None),
+        scope=getattr(args, "scope", None),
+    )
+
+
 def _config_from_args(args) -> Config:
     cli_servers = _cli_servers(args)
+    cli_auth = _cli_auth(args)
     if args.repos:
         repos: list[RepoConfig] = []
         for raw in args.repos:
@@ -112,6 +209,8 @@ def _config_from_args(args) -> Config:
                     path=path,
                     servers=list(cli_servers),
                 )
+            if cli_auth:
+                repo.auth = cli_auth
             repos.append(repo)
         config = Config(output=OutputConfig(), repos=repos)
     else:
@@ -119,6 +218,24 @@ def _config_from_args(args) -> Config:
         if cli_servers:
             for repo in config.repos:
                 repo.servers = merge_servers(cli_servers, repo.servers)
+        if cli_auth:
+            for repo in config.repos:
+                repo.auth = cli_auth
+    if args.embed_auth:
+        for repo in config.repos:
+            if repo.auth:
+                repo.auth.embed = True
+    if args.no_embed_auth:
+        for repo in config.repos:
+            if repo.auth:
+                repo.auth.embed = False
+    if args.probe_path:
+        for repo in config.repos:
+            if repo.auth:
+                repo.auth.probe_path = args.probe_path
+            elif args.check_api:
+                from .auth import AuthConfig
+                repo.auth = AuthConfig(probe_path=args.probe_path)
     if args.output:
         config.output.directory = args.output
     if args.formats:
@@ -174,6 +291,21 @@ def main(argv: list[str] | None = None) -> int:
                 "Set `host`/`servers` in config or pass --server.",
                 file=sys.stderr,
             )
+        if repo.auth and repo.auth.normalized_type():
+            print(f"         auth: {describe_auth(repo.auth)}")
+            if not has_credentials(repo.auth):
+                print(
+                    f"         warning: {missing_credential_hint(repo.auth)} "
+                    "for live checks / HTML pre-authorize. "
+                    "Swagger UI Authorize can still be used by hand.",
+                    file=sys.stderr,
+                )
+            if repo.auth.embed and has_credentials(repo.auth):
+                print(
+                    "         warning: credentials were embedded in the HTML. "
+                    "Do not publish swagger-output/*.html.",
+                    file=sys.stderr,
+                )
         if args.verbose:
             for ep in sorted(spec.endpoints, key=lambda e: (e.path, e.method)):
                 sec = f"  auth={','.join(ep.security)}" if ep.security else ""
@@ -190,21 +322,51 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print("         validate: ok")
 
+        auth_headers = request_headers(repo.auth)
+
         if args.ping_servers:
             # Only operator-configured hosts — never URLs imported from a spec.
             ping_targets = list(repo.servers)
             if not ping_targets:
                 print("         ping: skipped (no host configured)")
             for server in ping_targets:
-                ok, detail = ping_url(server.url)
+                ok, detail = ping_url(server.url, extra_headers=auth_headers or None)
                 flag = "ok" if ok else "fail"
-                print(f"         ping [{flag}]: {detail}")
+                extra = " (auth sent)" if auth_headers else ""
+                print(f"         ping [{flag}]: {detail}{extra}")
                 if not ok:
                     validation_failed = True
 
+        if args.check_api:
+            probe = (repo.auth.probe_path if repo.auth else "") or "/"
+            hosts = list(repo.servers)
+            if not hosts:
+                print("         check-api: skipped (no host configured)")
+            elif repo.auth and repo.auth.normalized_type() and not auth_headers:
+                hint = repo.auth._token_error or missing_credential_hint(repo.auth)
+                print(f"         check-api: skipped ({hint})", file=sys.stderr)
+                validation_failed = True
+            for server in hosts:
+                target = join_host_path(server.url, probe)
+                ok, detail = ping_url(
+                    target, extra_headers=auth_headers or None, method="GET"
+                )
+                flag = "ok" if ok else "fail"
+                extra = " (auth sent)" if auth_headers else ""
+                print(f"         check-api [{flag}]: {detail}{extra}")
+                # 401/403 after sending auth usually means bad/missing credentials.
+                if not ok or (
+                    auth_headers
+                    and detail.split(" ", 1)[0] in {"401", "403"}
+                ):
+                    validation_failed = True
+
         written = {}
+        prefill = swagger_prefill(repo.auth, spec)
         if config.output.per_repo:
-            written = write_spec(doc, out_dir, spec.name, config.output.formats)
+            written = write_spec(
+                doc, out_dir, spec.name, config.output.formats, auth_prefill=prefill
+            )
 
         index_entries.append(
             {
@@ -214,6 +376,7 @@ def main(argv: list[str] | None = None) -> int:
                 "frameworks": spec.detected_frameworks,
                 "html": written["html"].name if "html" in written else None,
                 "servers": [s.url for s in spec.servers],
+                "auth": describe_auth(repo.auth),
             }
         )
 
