@@ -22,7 +22,7 @@ from .git_source import (
     strip_git_userinfo,
 )
 from .models import ApiSpec
-from .servers import drop_localhost, merge_servers
+from .servers import drop_localhost, merge_servers, redact_url
 
 
 @dataclass
@@ -63,8 +63,16 @@ def resolve_repo(repo: RepoConfig, cache_root: Path) -> str:
                 "cannot be cloned. Export it before running swagger_gen. "
                 "token_env is the variable name, not the token value."
             )
+        username_explicit = bool(repo.git_username or repo.git_username_env)
+        if embedded_user and embedded_user != "x-access-token":
+            username_explicit = True
         cloned = clone_or_update(
-            clean, repo.ref, cache_root, username=username, password=password
+            clean,
+            repo.ref,
+            cache_root,
+            username=username,
+            password=password,
+            username_explicit=username_explicit,
         )
         repo.resolved_path = str(cloned)
         repo.url = clean

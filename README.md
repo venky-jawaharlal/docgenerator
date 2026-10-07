@@ -229,9 +229,12 @@ Private HTTPS git URLs can take the token directly as `git.token` in
 `git.username` / `git.password`. `git.token_env` is only the **name** of an
 environment variable, not the token. The same applies to `--git-token-env`.
 The secret is passed to git through a private askpass helper and is not stored
-in the clone URL or the generated docs. SSH URLs (`git@…`) still use your SSH
-agent. The generator never prompts for a password. Tokens embedded in clone URLs
-are stripped before clone and redacted from logs.
+in the clone URL or the generated docs. If the host answers `HTTP Basic: Access
+denied`, the same token is tried again as GitLab's `oauth2` user and on the
+other of `http`/`https` (public GitHub, GitLab, and Bitbucket are never
+downgraded to `http`). SSH URLs (`git@…`) still use your SSH agent. The
+generator never prompts for a password. Tokens embedded in clone URLs are
+stripped before clone and redacted from logs.
 
 Combined documents attach each service's host at the path level and tag
 operations by sub-project. If two services share the same path, prefer the

@@ -15,6 +15,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import unquote, urlparse, urlunparse
 
@@ -58,6 +59,18 @@ _UNSAFE_GIT_ENV = {
 
 _CLONE_TIMEOUT_SEC = 180
 _FETCH_TIMEOUT_SEC = 120
+
+# These hosts speak HTTPS. Do not send a token to their HTTP port.
+_PUBLIC_HTTPS_HOSTS = frozenset(
+    {
+        "github.com",
+        "www.github.com",
+        "gitlab.com",
+        "www.gitlab.com",
+        "bitbucket.org",
+        "www.bitbucket.org",
+    }
+)
 
 
 class SourceError(Exception):
@@ -255,6 +268,23 @@ def _run_git(
         )
 
 
+def _note_fallback(original: str, used: str, username: str, used_user: str) -> None:
+    if used == original and used_user == username:
+        return
+    bits = []
+    if used != original:
+        bits.append(redact_url(used))
+        if urlparse(used).scheme == "http" and urlparse(original).scheme == "https":
+            bits[-1] += " (token sent unencrypted)"
+    if used_user != username:
+        bits.append(f"username {used_user}")
+    print(
+        f"warning: {redact_url(original)} did not accept the credentials; "
+        f"cloned with {' and '.join(bits)}.",
+        file=sys.stderr,
+    )
+
+
 def _chmod_private(path: Path) -> None:
     try:
         os.chmod(path, 0o700)
@@ -267,6 +297,84 @@ def _cache_dir_for(url: str, ref: str | None, cache_root: Path) -> Path:
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", repo_name_from_url(url)).strip("-") or "repo"
     return cache_root / f"{slug}-{digest}"
+
+
+def alternate_http_url(url: str) -> str | None:
+    """Return the same URL with http and https swapped.
+
+    Public forges are not downgraded from https to http, so a token is not
+    sent in the clear to github.com, gitlab.com, or bitbucket.org.
+    """
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme == "https":
+        other = "http"
+    elif scheme == "http":
+        other = "https"
+    else:
+        return None
+    host = (parsed.hostname or "").lower()
+    if other == "http" and host in _PUBLIC_HTTPS_HOSTS:
+        return None
+    return urlunparse(parsed._replace(scheme=other))
+
+
+def _auth_rejected(text: str) -> bool:
+    blob = (text or "").lower()
+    return any(
+        phrase in blob
+        for phrase in (
+            "http basic: access denied",
+            "authentication failed",
+            "invalid username or token",
+            "invalid username or password",
+            "could not read username",
+            "support for password authentication was removed",
+            "the requested url returned error: 401",
+            "the requested url returned error: 403",
+        )
+    )
+
+
+def _transport_failed(text: str) -> bool:
+    blob = (text or "").lower()
+    return any(
+        phrase in blob
+        for phrase in (
+            "could not resolve host",
+            "connection refused",
+            "connection timed out",
+            "failed to connect",
+            "ssl certificate",
+            "ssl_error",
+            "tls",
+            "wrong version number",
+            "server certificate",
+            "error:1404",
+        )
+    )
+
+
+def _clone_attempts(
+    url: str, username: str, password: str, username_explicit: bool
+) -> list[tuple[str, str]]:
+    """URLs and usernames to try, original first.
+
+    A token with no username is sent as ``x-access-token`` (GitHub). GitLab
+    rejects that with HTTP Basic: Access denied and expects ``oauth2``. Both
+    http and https are listed so an enterprise host on the other port is tried
+    only after the configured URL fails.
+    """
+    users = [username]
+    if password and not username_explicit:
+        for extra in ("oauth2", "git"):
+            if extra not in users:
+                users.append(extra)
+    urls = [url]
+    other = alternate_http_url(url)
+    if other:
+        urls.append(other)
+    return [(candidate, user) for candidate in urls for user in users]
 
 
 def _sanitize_git_output(text: str, url: str, *secrets: str) -> str:
@@ -289,6 +397,7 @@ def clone_or_update(
     *,
     username: str = "",
     password: str = "",
+    username_explicit: bool = False,
 ) -> Path:
     """Shallow-clone ``url`` (optional ``ref``) into ``cache_root`` and return the path.
 
@@ -313,16 +422,25 @@ def clone_or_update(
     _chmod_private(cache_root)
     askpass = _ensure_askpass(cache_root) if password else None
 
+    if password and not username and not username_explicit:
+        username = "x-access-token"
+
     dest = _cache_dir_for(url, ref, cache_root)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    def git(args: list[str], cwd: Path | None = None, timeout: int = _FETCH_TIMEOUT_SEC):
+    def run(
+        args: list[str],
+        cwd: Path | None,
+        timeout: int,
+        user: str,
+        secret: str,
+    ):
         return _run_git(
             args,
             cwd=cwd,
             timeout=timeout,
-            username=username,
-            password=password,
+            username=user,
+            password=secret,
             askpass=askpass,
         )
 
@@ -330,10 +448,10 @@ def clone_or_update(
         fetch_args = ["fetch", "--depth", "1", "origin"]
         if ref:
             fetch_args.append(ref)
-        fetched = git(fetch_args, cwd=dest, timeout=_FETCH_TIMEOUT_SEC)
+        fetched = run(fetch_args, dest, _FETCH_TIMEOUT_SEC, username, password)
         if fetched.returncode == 0:
             target = ref or "FETCH_HEAD"
-            checked = git(["checkout", "--force", target], cwd=dest)
+            checked = run(["checkout", "--force", target], dest, _FETCH_TIMEOUT_SEC, username, password)
             if checked.returncode == 0:
                 _chmod_private(dest)
                 return dest
@@ -342,33 +460,78 @@ def clone_or_update(
     template = cache_root / ".empty-template"
     template.mkdir(parents=True, exist_ok=True)
 
-    clone_args = ["clone", "--depth", "1", f"--template={template}"]
-    if ref:
-        clone_args += ["--branch", ref]
-    clone_args += [url, str(dest)]
-    cloned = git(clone_args, timeout=_CLONE_TIMEOUT_SEC)
-    if cloned.returncode == 0:
-        _chmod_private(dest)
-        return dest
-
-    # ``--branch`` only works for branches/tags. Retry without it for SHAs.
-    if ref:
+    def attempt(try_url: str, try_user: str) -> tuple[bool, str]:
         shutil.rmtree(dest, ignore_errors=True)
-        cloned = git(
-            ["clone", f"--template={template}", url, str(dest)],
-            timeout=_CLONE_TIMEOUT_SEC,
-        )
-        if cloned.returncode == 0:
-            checked = git(["checkout", "--force", ref], cwd=dest)
-            if checked.returncode == 0:
-                _chmod_private(dest)
-                return dest
-            raise SourceError(
-                f"Cloned {redact_url(url)} but could not check out the requested ref. "
-                f"{_sanitize_git_output(checked.stderr or checked.stdout, url, username, password)}"
-            )
 
-    detail = _sanitize_git_output(
-        cloned.stderr or cloned.stdout, url, username, password
-    ) or "git clone failed"
-    raise SourceError(f"Failed to clone {redact_url(url)}: {detail}")
+        def git(args: list[str], cwd: Path | None = None, timeout: int = _FETCH_TIMEOUT_SEC):
+            return run(args, cwd, timeout, try_user, password)
+
+        clone_args = ["clone", "--depth", "1", f"--template={template}"]
+        if ref:
+            clone_args += ["--branch", ref]
+        clone_args += [try_url, str(dest)]
+        cloned = git(clone_args, timeout=_CLONE_TIMEOUT_SEC)
+        if cloned.returncode == 0:
+            _chmod_private(dest)
+            return True, ""
+
+        # ``--branch`` only works for branches/tags. Retry without it for SHAs
+        # when the failure is not an auth or connection problem.
+        detail = _sanitize_git_output(
+            cloned.stderr or cloned.stdout, try_url, try_user, password
+        ) or "git clone failed"
+        if ref and not _auth_rejected(detail) and not _transport_failed(detail):
+            shutil.rmtree(dest, ignore_errors=True)
+            cloned = git(
+                ["clone", f"--template={template}", try_url, str(dest)],
+                timeout=_CLONE_TIMEOUT_SEC,
+            )
+            if cloned.returncode == 0:
+                checked = git(["checkout", "--force", ref], cwd=dest)
+                if checked.returncode == 0:
+                    _chmod_private(dest)
+                    return True, ""
+                detail = _sanitize_git_output(
+                    checked.stderr or checked.stdout, try_url, try_user, password
+                ) or "could not check out the requested ref"
+                return False, detail
+            detail = _sanitize_git_output(
+                cloned.stderr or cloned.stdout, try_url, try_user, password
+            ) or detail
+        return False, detail
+
+    saw_auth = False
+    saw_transport = False
+    last_detail = "git clone failed"
+    tried: list[str] = []
+    for try_url, try_user in _clone_attempts(url, username, password, username_explicit):
+        if try_user != username and not saw_auth:
+            continue
+        if try_url != url and not (saw_auth or saw_transport):
+            continue
+        label = redact_url(try_url)
+        if try_user and try_user != username:
+            label += f" as {try_user}"
+        tried.append(label)
+        ok, detail = attempt(try_url, try_user)
+        if ok:
+            _note_fallback(url, try_url, username, try_user)
+            return dest
+        last_detail = detail or last_detail
+        if _auth_rejected(detail):
+            saw_auth = True
+        elif _transport_failed(detail):
+            saw_transport = True
+        else:
+            break
+
+    message = f"Failed to clone {redact_url(url)}: {last_detail}"
+    if len(tried) > 1:
+        message += " Also tried " + ", ".join(tried[1:]) + "."
+    if saw_auth:
+        message += (
+            " GitHub tokens use username x-access-token."
+            " GitLab tokens need username oauth2."
+            " Bitbucket needs your account username with the app password."
+        )
+    raise SourceError(message)
