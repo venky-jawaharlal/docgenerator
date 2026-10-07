@@ -295,7 +295,7 @@ SSH URLs use your SSH agent. The tool will not prompt for a password.
 | 404 on a path that exists in the spec | Gateway prefix / `base_path` mismatch | Set `base_path` or put the prefix in `host` (e.g. `https://api.example.com/orders`) |
 | Combined UI hits the wrong service | Two repos share a path | Use the per-service `.html` file |
 | `git is required to clone…` | `git` not on `PATH` | Install git, or clone yourself and pass `--repo /local/path` |
-| `HTTP Basic: Access denied` while cloning | Token username or scheme does not match the git host | Leave `git.username` unset so a token is tried as `x-access-token` and `oauth2`, on both `http` and `https`. GitLab can be pinned with `username: oauth2`. Bitbucket needs your account username |
+| `HTTP Basic: Access denied` or `Repository not found` while cloning | Token was not sent, or the username/scheme does not match the host | Set `git.username` and `git.token`. The clone retries GitHub (`x-access-token`), GitLab (`oauth2`), and a bearer token, over `https` and `http`. `git@host:path` URLs are cloned over HTTPS when a token is set |
 
 ## Quick checklist
 

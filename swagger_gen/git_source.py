@@ -194,6 +194,24 @@ def strip_git_userinfo(url: str) -> tuple[str, str, str]:
     return clean, user, password
 
 
+def _git_secret(direct: str, env_name: str) -> str:
+    """Resolve a clone secret from a value or an environment variable.
+
+    ``token_env`` is normally the variable name. If that variable is unset and
+    the field is not an ``ENV_NAME`` (for example a pasted ``ghp_`` or
+    ``glpat-`` token), the field itself is the secret.
+    """
+    from .auth import _from_env
+
+    got = _from_env(direct, env_name).strip()
+    if got:
+        return got
+    env_name = (env_name or "").strip()
+    if env_name and not re.fullmatch(r"[A-Z][A-Z0-9_]*", env_name):
+        return env_name
+    return ""
+
+
 def resolve_git_auth(
     *,
     token: str = "",
@@ -206,8 +224,8 @@ def resolve_git_auth(
     """Resolve HTTPS clone credentials. Empty password means use git's own helper."""
     from .auth import _from_env
 
-    secret = _from_env(password, password_env) or _from_env(token, token_env)
-    user = _from_env(username, username_env)
+    secret = _git_secret(password, password_env) or _git_secret(token, token_env)
+    user = _from_env(username, username_env).strip()
     if secret and not user:
         user = "x-access-token"
     return user, secret
@@ -229,6 +247,7 @@ def _run_git(
     username: str = "",
     password: str = "",
     askpass: Path | None = None,
+    bearer: str = "",
 ) -> subprocess.CompletedProcess:
     env = _git_env()
     # Never run repo hooks; never materialize symlinks from untrusted trees.
@@ -239,9 +258,19 @@ def _run_git(
         "-c", "core.symlinks=false",
         "-c", "credential.helper=",
     ]
-    if password:
+    if password or bearer:
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GCM_INTERACTIVE"] = "Never"
+        # A global insteadOf that rewrites https to ssh would ignore the token.
+        # The longest insteadOf wins, so pin each http(s) URL to itself.
+        for arg in args:
+            if arg.startswith(("http://", "https://")) and "=" not in arg and " " not in arg:
+                cmd.extend(["-c", f"url.{arg}.insteadof={arg}"])
+    if bearer:
+        env["GIT_CONFIG_COUNT"] = "1"
+        env["GIT_CONFIG_KEY_0"] = "http.extraheader"
+        env["GIT_CONFIG_VALUE_0"] = f"Authorization: Bearer {bearer}"
+    elif password:
         env["SWAGGER_GEN_GIT_USER"] = username
         env["SWAGGER_GEN_GIT_PASS"] = password
         if askpass is not None:
@@ -268,18 +297,24 @@ def _run_git(
         )
 
 
-def _note_fallback(original: str, used: str, username: str, used_user: str) -> None:
-    if used == original and used_user == username:
+def _note_fallback(
+    original: str, used: str, username: str, used_user: str, bearer: bool = False
+) -> None:
+    if used == original and used_user == username and not bearer:
         return
     bits = []
     if used != original:
         bits.append(redact_url(used))
-        if urlparse(used).scheme == "http" and urlparse(original).scheme == "https":
+        if urlparse(used).scheme == "http" and urlparse(original).scheme != "http":
             bits[-1] += " (token sent unencrypted)"
-    if used_user != username:
+    if bearer:
+        bits.append("a bearer token")
+    elif used_user != username:
         bits.append(f"username {used_user}")
+    if not bits:
+        return
     print(
-        f"warning: {redact_url(original)} did not accept the credentials; "
+        f"warning: {redact_url(original)} did not accept the first login; "
         f"cloned with {' and '.join(bits)}.",
         file=sys.stderr,
     )
@@ -355,26 +390,90 @@ def _transport_failed(text: str) -> bool:
     )
 
 
+def _ssh_to_https(url: str) -> str | None:
+    """Turn ``git@host:path`` or ``ssh://git@host/path`` into an https URL."""
+    raw = (url or "").strip()
+    if raw.startswith("ssh://"):
+        parsed = urlparse(raw)
+        host = parsed.hostname or ""
+        path = parsed.path or ""
+        if not host or not path:
+            return None
+        return f"https://{host}{path if path.startswith('/') else '/' + path}"
+    if raw.startswith("git@") and ":" in raw[4:]:
+        host, path = raw[4:].split(":", 1)
+        host = host.strip()
+        path = path.strip().lstrip("/")
+        if host and path and " " not in host:
+            return f"https://{host}/{path}"
+    return None
+
+
+def _http_urls(url: str) -> list[str]:
+    """http(s) URLs to try. SSH clone URLs become https, then http when allowed."""
+    raw = (url or "").strip()
+    urls: list[str] = []
+
+    def add(candidate: str | None) -> None:
+        if candidate and candidate not in urls:
+            urls.append(candidate)
+
+    scheme = urlparse(raw).scheme.lower() if "://" in raw else ""
+    if scheme in ("http", "https"):
+        add(raw)
+        add(alternate_http_url(raw))
+        return urls
+    https = _ssh_to_https(raw)
+    if https:
+        add(https)
+        add(alternate_http_url(https))
+        return urls
+    add(raw)
+    return urls
+
+
 def _clone_attempts(
     url: str, username: str, password: str, username_explicit: bool
-) -> list[tuple[str, str]]:
-    """URLs and usernames to try, original first.
+) -> list[tuple[str, str, bool]]:
+    """``(url, username, bearer)`` attempts, configured login first.
 
-    A token with no username is sent as ``x-access-token`` (GitHub). GitLab
-    rejects that with HTTP Basic: Access denied and expects ``oauth2``. Both
-    http and https are listed so an enterprise host on the other port is tried
-    only after the configured URL fails.
+    ``username_explicit`` is accepted for callers that already chose a
+    username. Fallback usernames still run after that login is rejected:
+    GitHub accepts ``x-access-token``, GitLab accepts ``oauth2``. A bearer
+    header is tried last. SSH URLs are cloned over https when a token or
+    password is set, because SSH cannot use that secret.
     """
-    users = [username]
-    if password and not username_explicit:
-        for extra in ("oauth2", "git"):
-            if extra not in users:
-                users.append(extra)
-    urls = [url]
-    other = alternate_http_url(url)
-    if other:
-        urls.append(other)
-    return [(candidate, user) for candidate in urls for user in users]
+    del username_explicit  # configured username is already first
+    if not password:
+        return [(url, username, False)]
+    users: list[str] = []
+    for candidate in (username, "x-access-token", "oauth2", "git"):
+        if candidate and candidate not in users:
+            users.append(candidate)
+    urls = _http_urls(url)
+    attempts = [(candidate, user, False) for candidate in urls for user in users]
+    for candidate in urls:
+        attempts.append((candidate, username or "x-access-token", True))
+    return attempts
+
+
+def _likely_auth_miss(text: str) -> bool:
+    """Private hosts often say 'not found' when the credentials were rejected."""
+    blob = (text or "").lower()
+    return any(
+        phrase in blob
+        for phrase in (
+            "repository not found",
+            "project you were looking for could not be found",
+            "incorrect username or password",
+            "permission denied (publickey)",
+            "could not read from remote repository",
+        )
+    )
+
+
+def _retryable(text: str) -> bool:
+    return _auth_rejected(text) or _transport_failed(text) or _likely_auth_miss(text)
 
 
 def _sanitize_git_output(text: str, url: str, *secrets: str) -> str:
@@ -387,6 +486,11 @@ def _sanitize_git_output(text: str, url: str, *secrets: str) -> str:
             blob = blob.replace(secret, "****")
     # Also strip any remaining user:password@ patterns.
     blob = re.sub(r"://[^/\s:@]+:[^/\s@]+@", "://****@", blob)
+    blob = re.sub(
+        r"(?i)(authorization:\s*(?:basic|bearer)\s+)\S+",
+        r"\1****",
+        blob,
+    )
     return blob[:2000]
 
 
@@ -434,14 +538,17 @@ def clone_or_update(
         timeout: int,
         user: str,
         secret: str,
+        *,
+        bearer: str = "",
     ):
         return _run_git(
             args,
             cwd=cwd,
             timeout=timeout,
             username=user,
-            password=secret,
-            askpass=askpass,
+            password="" if bearer else secret,
+            askpass=None if bearer else askpass,
+            bearer=bearer,
         )
 
     if (dest / ".git").is_dir():
@@ -451,7 +558,9 @@ def clone_or_update(
         fetched = run(fetch_args, dest, _FETCH_TIMEOUT_SEC, username, password)
         if fetched.returncode == 0:
             target = ref or "FETCH_HEAD"
-            checked = run(["checkout", "--force", target], dest, _FETCH_TIMEOUT_SEC, username, password)
+            checked = run(
+                ["checkout", "--force", target], dest, _FETCH_TIMEOUT_SEC, username, password
+            )
             if checked.returncode == 0:
                 _chmod_private(dest)
                 return dest
@@ -460,11 +569,12 @@ def clone_or_update(
     template = cache_root / ".empty-template"
     template.mkdir(parents=True, exist_ok=True)
 
-    def attempt(try_url: str, try_user: str) -> tuple[bool, str]:
+    def attempt(try_url: str, try_user: str, use_bearer: bool) -> tuple[bool, str]:
         shutil.rmtree(dest, ignore_errors=True)
+        bearer = password if use_bearer else ""
 
         def git(args: list[str], cwd: Path | None = None, timeout: int = _FETCH_TIMEOUT_SEC):
-            return run(args, cwd, timeout, try_user, password)
+            return run(args, cwd, timeout, try_user, password, bearer=bearer)
 
         clone_args = ["clone", "--depth", "1", f"--template={template}"]
         if ref:
@@ -480,7 +590,7 @@ def clone_or_update(
         detail = _sanitize_git_output(
             cloned.stderr or cloned.stdout, try_url, try_user, password
         ) or "git clone failed"
-        if ref and not _auth_rejected(detail) and not _transport_failed(detail):
+        if ref and not _retryable(detail):
             shutil.rmtree(dest, ignore_errors=True)
             cloned = git(
                 ["clone", f"--template={template}", try_url, str(dest)],
@@ -504,21 +614,27 @@ def clone_or_update(
     saw_transport = False
     last_detail = "git clone failed"
     tried: list[str] = []
-    for try_url, try_user in _clone_attempts(url, username, password, username_explicit):
-        if try_user != username and not saw_auth:
+    attempts = _clone_attempts(url, username, password, username_explicit)
+    primary_url, primary_user, _primary_bearer = attempts[0]
+    for try_url, try_user, use_bearer in attempts:
+        if use_bearer and not saw_auth:
             continue
-        if try_url != url and not (saw_auth or saw_transport):
+        if try_user != primary_user and not use_bearer and not saw_auth:
+            continue
+        if try_url != primary_url and not (saw_auth or saw_transport):
             continue
         label = redact_url(try_url)
-        if try_user and try_user != username:
+        if use_bearer:
+            label += " with bearer token"
+        elif try_user and try_user != primary_user:
             label += f" as {try_user}"
         tried.append(label)
-        ok, detail = attempt(try_url, try_user)
+        ok, detail = attempt(try_url, try_user, use_bearer)
         if ok:
-            _note_fallback(url, try_url, username, try_user)
+            _note_fallback(url, try_url, primary_user, try_user, use_bearer)
             return dest
         last_detail = detail or last_detail
-        if _auth_rejected(detail):
+        if _auth_rejected(detail) or _likely_auth_miss(detail):
             saw_auth = True
         elif _transport_failed(detail):
             saw_transport = True

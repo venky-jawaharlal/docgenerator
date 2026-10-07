@@ -137,7 +137,7 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
       color: var(--accent); text-decoration: none; font-size: 13px; font-weight: 600;
     }
     .overview-link:hover, .overview-link.active { background: var(--panel-2); }
-    .main {
+    .app > .main {
       flex: 1 1 auto; background: var(--main-bg); color: #0f172a;
       overflow: auto; min-width: 180px; height: 100vh;
     }

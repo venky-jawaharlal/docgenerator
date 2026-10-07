@@ -13,6 +13,7 @@ Try-it-out targets the real service instead of localhost.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -126,13 +127,19 @@ def _repo_from_source(source: str, name: Optional[str] = None) -> RepoConfig:
     )
 
 
-def _git_value(raw: dict, entry: dict, key: str, default: str = "") -> str:
-    if isinstance(raw, dict) and raw.get(key) not in (None, ""):
-        return str(raw.get(key))
-    flat = entry.get(f"git_{key}")
-    if flat not in (None, ""):
-        return str(flat)
-    return default
+def _git_value(
+    raw: dict, entry: dict, key: str, default: str = "", aliases: tuple[str, ...] = ()
+) -> str:
+    keys = (key, *aliases)
+    if isinstance(raw, dict):
+        for name in keys:
+            if raw.get(name) not in (None, ""):
+                return str(raw.get(name)).strip()
+    for name in keys:
+        flat = entry.get(f"git_{name}")
+        if flat not in (None, ""):
+            return str(flat).strip()
+    return str(default or "").strip()
 
 
 def _apply_git(repo: RepoConfig, entry: dict | None, default: dict | None = None) -> None:
@@ -140,13 +147,20 @@ def _apply_git(repo: RepoConfig, entry: dict | None, default: dict | None = None
     if entry:
         block = entry.get("git")
         if isinstance(block, str):
-            raw = {"token_env": block}
+            text = block.strip()
+            # GH_TOKEN is an env var name. Anything else is the token itself.
+            if re.fullmatch(r"[A-Z][A-Z0-9_]*", text):
+                raw = {"token_env": text}
+            else:
+                raw = {"token": text}
         elif isinstance(block, dict):
             raw = block
     base = default or {}
-    repo.git_token = _git_value(raw, entry or {}, "token", str(base.get("token") or ""))
+    repo.git_token = _git_value(raw, entry or {}, "token", str(base.get("token") or ""), ("pat",))
     repo.git_token_env = _git_value(raw, entry or {}, "token_env", str(base.get("token_env") or ""))
-    repo.git_username = _git_value(raw, entry or {}, "username", str(base.get("username") or ""))
+    repo.git_username = _git_value(
+        raw, entry or {}, "username", str(base.get("username") or base.get("user") or ""), ("user",)
+    )
     repo.git_username_env = _git_value(
         raw, entry or {}, "username_env", str(base.get("username_env") or "")
     )
@@ -154,26 +168,29 @@ def _apply_git(repo: RepoConfig, entry: dict | None, default: dict | None = None
     repo.git_password_env = _git_value(
         raw, entry or {}, "password_env", str(base.get("password_env") or "")
     )
-    # A repo-level token_env is the clone token when `git:` did not set one.
+    # Repo-level keys apply when `git:` did not set them.
     if entry and not repo.git_token_env and not repo.git_token:
         if entry.get("token_env"):
-            repo.git_token_env = str(entry["token_env"])
-        elif entry.get("token"):
-            repo.git_token = str(entry["token"])
-    # Fall back to API auth only when no git credential was configured.
-    if (
-        repo.auth
-        and not any(
-            (
-                repo.git_token,
-                repo.git_token_env,
-                repo.git_password,
-                repo.git_password_env,
-            )
-        )
-    ):
-        repo.git_token = repo.auth.token
-        repo.git_token_env = repo.auth.token_env
+            repo.git_token_env = str(entry["token_env"]).strip()
+        elif entry.get("token") or entry.get("pat"):
+            repo.git_token = str(entry.get("token") or entry.get("pat")).strip()
+    if entry and not repo.git_username and not repo.git_username_env:
+        if entry.get("username") or entry.get("user"):
+            repo.git_username = str(entry.get("username") or entry.get("user")).strip()
+    if entry and not repo.git_password and not repo.git_password_env and entry.get("password"):
+        repo.git_password = str(entry["password"]).strip()
+    # Fill any still-empty clone field from API auth. A git token is not
+    # replaced by the API token, but a git username is kept.
+    if repo.auth:
+        if not repo.git_token and not repo.git_token_env:
+            repo.git_token = repo.auth.token
+            repo.git_token_env = repo.auth.token_env
+        if not repo.git_password and not repo.git_password_env:
+            repo.git_password = repo.auth.password
+            repo.git_password_env = repo.auth.password_env
+        if not repo.git_username and not repo.git_username_env:
+            repo.git_username = repo.auth.username
+            repo.git_username_env = repo.auth.username_env
 
 
 def _apply_servers(repo: RepoConfig, extra: list[Server] | None = None) -> None:
