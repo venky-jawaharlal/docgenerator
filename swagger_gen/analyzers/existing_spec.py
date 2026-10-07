@@ -67,8 +67,9 @@ class ExistingSpecAnalyzer(BaseAnalyzer):
 
     def _merge(self, data: dict, spec: ApiSpec) -> None:
         info = data.get("info", {}) or {}
-        if info.get("title") and spec.title == spec.name:
-            spec.title = str(info["title"])[:200]
+        imported_title = str(info.get("title") or "")[:200]
+        if imported_title and imported_title != spec.title:
+            spec.add_note(f"Imported spec title: {imported_title}")
         if info.get("version"):
             spec.version = str(info["version"])[:64]
         if info.get("description") and not spec.description:

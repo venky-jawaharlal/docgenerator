@@ -147,7 +147,9 @@ repos:
     url: https://github.com/org/orders-service.git
     ref: main
     git:
-      token_env: GH_TOKEN          # GitHub PAT. GitLab: username: oauth2
+      token: ghp_…                 # paste the PAT here; config.yaml is gitignored
+      # token_env: GH_TOKEN        # alternative: name of an env var, not the token
+      # username: oauth2           # GitLab. GitHub uses x-access-token by default
     servers:
       - url: https://orders.example.com
         description: Production
@@ -220,8 +222,10 @@ file is imported verbatim and takes priority (except localhost `servers`, which
 are replaced by your configured host). Django routes have no HTTP verb in
 the URLconf, so they are documented as `GET` with a note.
 
-Private HTTPS git URLs can take a token or username and password from
-`git.token_env` / `git.username_env` / `git.password_env` (or `--git-token-env`).
+Private HTTPS git URLs can take the token directly as `git.token` in
+`config.yaml` (that file is gitignored), or a username and password as
+`git.username` / `git.password`. `git.token_env` is only the **name** of an
+environment variable, not the token. The same applies to `--git-token-env`.
 The secret is passed to git through a private askpass helper and is not stored
 in the clone URL or the generated docs. SSH URLs (`git@…`) still use your SSH
 agent. The generator never prompts for a password. Tokens embedded in clone URLs

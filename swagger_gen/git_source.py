@@ -200,6 +200,14 @@ def resolve_git_auth(
     return user, secret
 
 
+# Prints username/password from the environment. The secret is not part of the command.
+_CREDENTIAL_HELPER = (
+    "!f() { test \"$1\" = get || exit 0; "
+    "printf 'username=%s\\npassword=%s\\n' "
+    "\"$SWAGGER_GEN_GIT_USER\" \"$SWAGGER_GEN_GIT_PASS\"; }; f"
+)
+
+
 def _run_git(
     args: list[str],
     cwd: Path | None = None,
@@ -210,18 +218,25 @@ def _run_git(
     askpass: Path | None = None,
 ) -> subprocess.CompletedProcess:
     env = _git_env()
-    if password and askpass is not None:
-        env["GIT_ASKPASS"] = str(askpass)
-        env["GIT_TERMINAL_PROMPT"] = "0"
-        env["SWAGGER_GEN_GIT_USER"] = username
-        env["SWAGGER_GEN_GIT_PASS"] = password
     # Never run repo hooks; never materialize symlinks from untrusted trees.
+    # Empty credential.helper disables osxkeychain / manager prompts.
     cmd = [
         "git",
         "-c", "core.hooksPath=/dev/null",
         "-c", "core.symlinks=false",
-        *args,
+        "-c", "credential.helper=",
     ]
+    if password:
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["GCM_INTERACTIVE"] = "Never"
+        env["SWAGGER_GEN_GIT_USER"] = username
+        env["SWAGGER_GEN_GIT_PASS"] = password
+        if askpass is not None:
+            env["GIT_ASKPASS"] = str(askpass)
+            env["SSH_ASKPASS"] = str(askpass)
+            env["SSH_ASKPASS_REQUIRE"] = "force"
+        cmd.extend(["-c", f"credential.helper={_CREDENTIAL_HELPER}"])
+    cmd.extend(args)
     try:
         return subprocess.run(
             cmd,

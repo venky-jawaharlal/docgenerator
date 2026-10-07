@@ -154,6 +154,26 @@ def _apply_git(repo: RepoConfig, entry: dict | None, default: dict | None = None
     repo.git_password_env = _git_value(
         raw, entry or {}, "password_env", str(base.get("password_env") or "")
     )
+    # A repo-level token_env is the clone token when `git:` did not set one.
+    if entry and not repo.git_token_env and not repo.git_token:
+        if entry.get("token_env"):
+            repo.git_token_env = str(entry["token_env"])
+        elif entry.get("token"):
+            repo.git_token = str(entry["token"])
+    # Fall back to API auth only when no git credential was configured.
+    if (
+        repo.auth
+        and not any(
+            (
+                repo.git_token,
+                repo.git_token_env,
+                repo.git_password,
+                repo.git_password_env,
+            )
+        )
+    ):
+        repo.git_token = repo.auth.token
+        repo.git_token_env = repo.auth.token_env
 
 
 def _apply_servers(repo: RepoConfig, extra: list[Server] | None = None) -> None:

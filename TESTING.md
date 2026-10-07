@@ -270,7 +270,8 @@ repos:
     ref: v1.4.0
     host: https://your-service.example.com
     git:
-      token_env: GH_TOKEN
+      token: ghp_…               # the PAT itself; config.yaml is gitignored
+      # token_env: GH_TOKEN      # or an env var name, not the token value
     auth:
       type: bearer
       token_env: YOUR_SERVICE_TOKEN
@@ -278,10 +279,10 @@ repos:
 ```
 
 Clones land in `.swagger-gen-cache/` (gitignored) and are reused on the next
-run. For a private HTTPS repo, export `GH_TOKEN` (or the env var named in
-`git.token_env`) before generating. `auth.token_env` is separate: that token
-is for calling the deployed API, not for cloning. SSH URLs use your SSH agent.
-The tool will not prompt for a password.
+run. For a private HTTPS repo, put the PAT in `git.token`, or set
+`git.token_env` to an env var name and export that variable. `auth.token_env`
+is separate: that token is for calling the deployed API, not for cloning.
+SSH URLs use your SSH agent. The tool will not prompt for a password.
 
 ## Troubleshooting
 
@@ -294,7 +295,7 @@ The tool will not prompt for a password.
 | 404 on a path that exists in the spec | Gateway prefix / `base_path` mismatch | Set `base_path` or put the prefix in `host` (e.g. `https://api.example.com/orders`) |
 | Combined UI hits the wrong service | Two repos share a path | Use the per-service `.html` file |
 | `git is required to clone…` | `git` not on `PATH` | Install git, or clone yourself and pass `--repo /local/path` |
-| Clone fails for a private URL | No git credentials for that host | Set `git.token_env` (HTTPS) and export it, use SSH (`git@…`) with an agent, or pass a local checkout |
+| Clone fails for a private URL | No git credentials for that host | Set `git.token` (the PAT) or `git.token_env` plus the env var, use SSH (`git@…`) with an agent, or pass a local checkout |
 
 ## Quick checklist
 

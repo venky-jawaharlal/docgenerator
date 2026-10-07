@@ -187,7 +187,7 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
   <div class="app">
     <aside class="sidebar" id="sidebar">
       <div class="brand">
-        <h1>API documentation</h1>
+        <h1 id="brandTitle">Projects</h1>
         <p id="summary"></p>
       </div>
       <div class="search-wrap">
@@ -219,6 +219,12 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
     const overviewLink = document.getElementById('overviewLink');
     let ui = null;
 
+    const services = catalog.services || [];
+    const brand = services.length === 1
+      ? (services[0].name || services[0].title || 'Projects')
+      : 'Projects';
+    document.getElementById('brandTitle').textContent = brand;
+    document.title = brand;
     document.getElementById('summary').textContent =
       (catalog.services || []).length + ' project(s) · ' +
       (catalog.endpoint_count || 0) + ' endpoints';
@@ -293,7 +299,7 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
         const tree = trees[gi++];
         if (!tree) return;
         const parent = tree.querySelector('a.svc');
-        parent.querySelector('.name').textContent = svc.title;
+        parent.querySelector('.name').textContent = svc.name || svc.title;
         parent.querySelector('.meta').textContent = (svc.frameworks || []).join(', ') || 'API';
         parent.classList.toggle('active', route.svc === svc.id && !route.group);
         const links = tree.querySelectorAll('a.sub');
@@ -368,7 +374,7 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
         const tags = Object.keys(groups);
         if (!tags.length) return;
         const block = blocks[bi++];
-        block.querySelector('.ptitle').textContent = svc.title;
+        block.querySelector('.ptitle').textContent = svc.name || svc.title;
         const host = (svc.servers && svc.servers[0]) || '';
         block.querySelector('.psub').textContent =
           [(svc.frameworks || [])[0] || '', host].filter(Boolean).join(' · ');
@@ -402,6 +408,10 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
         spec = JSON.parse(JSON.stringify(spec));
         var desc = String(spec.info.description || '');
         spec.info.description = desc.split('\\n\\nGenerator notes:')[0];
+        if (spec._configName) {
+          spec.info.title = spec._configName;
+          delete spec._configName;
+        }
       }
       ui = SwaggerUIBundle({
         spec: spec,
@@ -480,9 +490,10 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
       overviewLink.classList.remove('active');
       const groups = groupedOps(svc, query);
       const group = groupId ? groups[groupId] : null;
+      const svcName = svc.name || svc.title;
       crumb.innerHTML = group
-        ? svc.title + ' <span>/ ' + group.name + '</span>'
-        : svc.title;
+        ? svcName + ' <span>/ ' + group.name + '</span>'
+        : svcName;
       pills.innerHTML = '';
       if (svc.auth) {
         const p = document.createElement('span');
@@ -506,7 +517,7 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
         });
         content.innerHTML = '<div class="hero"><h2></h2><p>Sub-projects for this repo. Pick one on the left to try it out.</p></div>' +
           '<section class="project"><div class="ops">' + body + '</div></section>';
-        content.querySelector('h2').textContent = svc.title;
+        content.querySelector('h2').textContent = svcName;
         const heads = content.querySelectorAll('.tag-h');
         tags.sort(function(a, b) { return groups[a].name.localeCompare(groups[b].name); }).forEach(function(tag, i) {
           heads[i].textContent = groups[tag].name;
@@ -532,18 +543,20 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
         const href = svc.html && /^[A-Za-z0-9._-]+\\.html$/.test(svc.html) ? svc.html : '';
         content.innerHTML = '<div class="hero"><h2></h2><p>Open the project page to try the grouped API list.</p>' +
           (href ? '<p><a href="' + href + '">Open ' + '</a></p>' : '') + '</div>';
-        content.querySelector('h2').textContent = svc.title;
-        if (href) content.querySelector('a').textContent = svc.title;
+        content.querySelector('h2').textContent = svcName;
+        if (href) content.querySelector('a').textContent = svcName;
         return;
       }
       const paths = {};
       group.ops.forEach(function(op) { paths[op.path] = true; });
-      mountSwagger(filterSpec(spec, group.name, paths), svc.auth_prefill || {});
+      const filtered = filterSpec(spec, group.name, paths);
+      filtered._configName = svcName;
+      mountSwagger(filtered, svc.auth_prefill || {});
     }
 
     function currentRoute() {
       const raw = (location.hash || '#overview').replace(/^#/, '');
-      const h = decodeURIComponent(raw.replace(/^\//, ''));
+      const h = decodeURIComponent(raw.replace(/^[/]/, ''));
       const bits = h.split('/').filter(Boolean);
       const first = (bits[0] || '').trim();
       if (!first || first === 'overview') return { svc: '', group: '' };

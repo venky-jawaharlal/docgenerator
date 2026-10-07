@@ -56,6 +56,13 @@ def resolve_repo(repo: RepoConfig, cache_root: Path) -> str:
         if not password and embedded_pass:
             password = embedded_pass
             username = username or embedded_user
+        if not password and (repo.git_token_env or repo.git_password_env):
+            missing = repo.git_token_env or repo.git_password_env
+            raise SourceError(
+                f"Environment variable {missing} is not set, so {redact_url(clean)} "
+                "cannot be cloned. Export it before running swagger_gen. "
+                "token_env is the variable name, not the token value."
+            )
         cloned = clone_or_update(
             clean, repo.ref, cache_root, username=username, password=password
         )
