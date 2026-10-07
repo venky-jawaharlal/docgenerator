@@ -6,6 +6,7 @@ from typing import Any
 
 from .models import ApiSpec, Endpoint, Parameter, SecurityScheme
 from .servers import to_openapi as servers_to_openapi
+from .tags import operation_tags
 
 
 def _param_to_openapi(param: Parameter) -> dict[str, Any]:
@@ -36,7 +37,7 @@ def _scheme_to_openapi(scheme: SecurityScheme) -> dict[str, Any]:
     return node
 
 
-def _operation(ep: Endpoint) -> dict[str, Any]:
+def _operation(ep: Endpoint, project: str | None = None) -> dict[str, Any]:
     op: dict[str, Any] = {
         "operationId": ep.operation_id or f"{ep.method}_{ep.path}",
         "responses": {},
@@ -45,8 +46,8 @@ def _operation(ep: Endpoint) -> dict[str, Any]:
         op["summary"] = ep.summary
     if ep.description:
         op["description"] = ep.description
-    if ep.tags:
-        op["tags"] = ep.tags
+    tags = operation_tags(ep.tags, project=project)
+    op["tags"] = tags
     if ep.deprecated:
         op["deprecated"] = True
 
@@ -130,7 +131,7 @@ def build_openapi(spec: ApiSpec) -> dict[str, Any]:
         item = paths.setdefault(ep.path, {})
         if ep.servers and "servers" not in item:
             item["servers"] = servers_to_openapi(ep.servers)
-        item[ep.method.lower()] = _operation(ep)
+        item[ep.method.lower()] = _operation(ep, project=spec.title or spec.name)
     doc["paths"] = paths
 
     components: dict[str, Any] = {}
@@ -166,9 +167,19 @@ def build_openapi(spec: ApiSpec) -> dict[str, Any]:
     if components:
         doc["components"] = components
 
-    # Collect the tag list for nicer grouping in Swagger UI.
-    tags = sorted({t for ep in spec.endpoints for t in ep.tags})
-    if tags:
-        doc["tags"] = [{"name": t} for t in tags]
+    tag_nodes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ep in spec.endpoints:
+        for name in operation_tags(ep.tags, project=spec.title or spec.name):
+            if name in seen:
+                continue
+            seen.add(name)
+            node: dict[str, Any] = {"name": name}
+            desc = spec.tag_meta.get(name, "")
+            if desc:
+                node["description"] = desc
+            tag_nodes.append(node)
+    if tag_nodes:
+        doc["tags"] = tag_nodes
 
     return doc

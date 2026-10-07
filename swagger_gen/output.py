@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 SWAGGER_UI_VERSION = "5.17.14"
+PROXY_BOOTSTRAP_OFF = "/* try-it-out proxy off */"
 
 _HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -18,25 +19,49 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; script-src https://unpkg.com 'unsafe-inline'; style-src https://unpkg.com 'unsafe-inline'; img-src data: https:; connect-src https: http:; font-src https://unpkg.com" />
+        content="default-src 'none'; script-src https://unpkg.com 'unsafe-inline'; style-src https://unpkg.com 'unsafe-inline'; img-src data: https:; connect-src 'self' https: http:; font-src https://unpkg.com" />
   <meta http-equiv="Referrer-Policy" content="no-referrer" />
   <title>__TITLE__ - API Docs</title>
   <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@__VER__/swagger-ui.css" />
-  <style>body { margin: 0; background: #fafafa; }</style>
+  <style>
+    body { margin: 0; background: #f4f6fb; }
+    .sg-chrome {
+      display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+      padding: 10px 18px; background: #0b1220; color: #e2e8f0;
+      font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .sg-chrome a { color: #7dd3fc; text-decoration: none; font-weight: 600; }
+    .sg-chrome a:hover { text-decoration: underline; }
+    .sg-chrome strong { font-size: 14px; }
+    .sg-chrome .hint { color: #94a3b8; margin-left: auto; }
+    .swagger-ui .topbar { display: none; }
+  </style>
 </head>
 <body>
+  <nav class="sg-chrome">
+    <a href="index.html">All projects</a>
+    <strong>__TITLE__</strong>
+    <span class="hint">Grouped by resource · filter in the bar below</span>
+  </nav>
   <div id="swagger-ui"></div>
   <script src="https://unpkg.com/swagger-ui-dist@__VER__/swagger-ui-bundle.js"></script>
   <script src="https://unpkg.com/swagger-ui-dist@__VER__/swagger-ui-standalone-preset.js"></script>
   <script>
     const spec = __SPEC_JSON__;
     const authPrefill = __AUTH_PREFILL__;
+    __PROXY_BOOTSTRAP__
     window.ui = SwaggerUIBundle({
       spec: spec,
       dom_id: '#swagger-ui',
       deepLinking: true,
       persistAuthorization: false,
       tryItOutEnabled: true,
+      docExpansion: 'list',
+      filter: true,
+      tagsSorter: 'alpha',
+      operationsSorter: 'method',
+      defaultModelsExpandDepth: -1,
+      displayRequestDuration: true,
       presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
       layout: 'BaseLayout',
       validatorUrl: null,
@@ -58,53 +83,21 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             req.headers[authPrefill.header.name] = authPrefill.header.value;
           }
         }
+        if (window.SWAGGER_GEN_PROXY && window.SWAGGER_GEN_PROXY.hosts && req.url) {
+          try {
+            var parsed = new URL(req.url, window.location.href);
+            if (parsed.pathname.indexOf('/__proxy__/') === 0) return req;
+            if (window.SWAGGER_GEN_PROXY.hosts.indexOf(parsed.origin) !== -1) {
+              req.url = window.location.origin + '/__proxy__/'
+                + parsed.protocol.replace(':','') + '/'
+                + parsed.host + parsed.pathname + parsed.search;
+            }
+          } catch (e) {}
+        }
         return req;
       }
     });
   </script>
-</body>
-</html>
-"""
-
-_INDEX_TEMPLATE = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; style-src 'unsafe-inline'" />
-  <title>API Documentation Index</title>
-  <style>
-    body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-           margin: 0; background: #0f172a; color: #e2e8f0; }
-    header { padding: 32px 40px; background: #111827; border-bottom: 1px solid #1f2937; }
-    h1 { margin: 0; font-size: 22px; }
-    p.sub { color: #94a3b8; margin: 6px 0 0; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-            gap: 16px; padding: 32px 40px; }
-    a.card { display: block; text-decoration: none; color: inherit; background: #1e293b;
-             border: 1px solid #334155; border-radius: 12px; padding: 20px;
-             transition: transform .08s ease, border-color .08s ease; }
-    a.card:hover { transform: translateY(-2px); border-color: #3b82f6; }
-    .name { font-size: 17px; font-weight: 600; }
-    .meta { color: #94a3b8; font-size: 13px; margin-top: 8px; }
-    .tags { margin-top: 12px; }
-    .tag { display: inline-block; background: #0b3b6f; color: #bfdbfe; font-size: 12px;
-           padding: 2px 8px; border-radius: 999px; margin: 2px 4px 0 0; }
-    .count { color: #34d399; font-weight: 600; }
-    .host { color: #7dd3fc; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-            font-size: 12px; margin-top: 10px; word-break: break-all; }
-    .auth { color: #fcd34d; font-size: 12px; margin-top: 6px; }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>API Documentation</h1>
-    <p class="sub">__SUMMARY__</p>
-  </header>
-  <div class="grid">
-    __CARDS__
-  </div>
 </body>
 </html>
 """
@@ -170,6 +163,7 @@ def write_spec(
             .replace("__VER__", SWAGGER_UI_VERSION)
             .replace("__SPEC_JSON__", _spec_json(doc))
             .replace("__AUTH_PREFILL__", _spec_json(auth_prefill or {}))
+            .replace("__PROXY_BOOTSTRAP__", PROXY_BOOTSTRAP_OFF)
         )
         path.write_text(html_page, encoding="utf-8")
         written["html"] = path
@@ -181,47 +175,7 @@ def write_index(
     out_dir: Path,
     entries: list[dict[str, Any]],
 ) -> Path:
-    """Write an index.html linking every per-repo HTML doc."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    cards = []
-    total_endpoints = 0
-    for entry in entries:
-        total_endpoints += entry["endpoint_count"]
-        tags = "".join(
-            f'<span class="tag">{_esc(t, 80)}</span>' for t in entry.get("frameworks", [])
-        )
-        href = entry.get("html") or ""
-        if href and not _SAFE_HREF.fullmatch(str(href)):
-            href = ""
-        title = _esc(entry.get("title"), 200)
-        version = _esc(entry.get("version"), 40)
-        hosts = entry.get("servers") or []
-        host_html = (
-            f'<div class="host">{_esc(hosts[0], 200)}</div>' if hosts else
-            '<div class="host">No deployment host configured</div>'
-        )
-        auth_label = entry.get("auth") or ""
-        auth_html = f'<div class="auth">Auth: {_esc(auth_label, 80)}</div>' if auth_label else ""
-        card_inner = (
-            f'<div class="name">{title}</div>'
-            f'<div class="meta"><span class="count">{int(entry["endpoint_count"])}</span>'
-            f' endpoints &middot; v{version}</div>'
-            f'{host_html}'
-            f'{auth_html}'
-            f'<div class="tags">{tags}</div>'
-        )
-        if href:
-            cards.append(f'<a class="card" href="{html.escape(href, quote=True)}">{card_inner}</a>')
-        else:
-            cards.append(f'<div class="card">{card_inner}</div>')
+    """Write the project-grouped API portal to index.html."""
+    from .portal import write_portal
 
-    summary = (
-        f"{len(entries)} service(s) &middot; {total_endpoints} endpoints documented"
-    )
-    html_page = (
-        _INDEX_TEMPLATE.replace("__SUMMARY__", _esc(summary, 200))
-        .replace("__CARDS__", "\n    ".join(cards))
-    )
-    path = out_dir / "index.html"
-    path.write_text(html_page, encoding="utf-8")
-    return path
+    return write_portal(out_dir, entries)

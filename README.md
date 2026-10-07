@@ -66,11 +66,12 @@ python -m swagger_gen --config config.yaml --validate --check-api
 # Also HTTP-ping each configured host (sends auth headers when configured):
 python -m swagger_gen --config config.yaml --validate --ping-servers
 
-# See exactly which endpoints/auth were found:
-python -m swagger_gen --config config.yaml --verbose
+# Open Swagger UI via the CORS-safe local proxy (recommended after adding auth):
+python -m swagger_gen --config config.yaml --serve
 ```
 
-Open `swagger-output/index.html` in a browser, or follow
+Open `swagger-output/index.html` in a browser. The portal groups endpoints by
+sub-project in a sidebar (search, then open a service to try it). Follow
 [`TESTING.md`](./TESTING.md) to exercise Try-it-out against the deployed host.
 
 ### CLI options
@@ -96,6 +97,8 @@ Open `swagger-output/index.html` in a browser, or follow
 | `--probe-path PATH` | Path used by `--check-api` (default `/`) |
 | `--check-api` | GET the probe path on each configured host using configured auth |
 | `--embed-auth` | Pre-authorize generated HTML (do not publish those files) |
+| `--serve` | Serve Swagger UI locally and proxy Try-it-out to configured hosts (avoids CORS) |
+| `--port` / `--bind` | Port and address for `--serve` (default `8765` / `127.0.0.1`) |
 | `--validate` | Fail if a document is malformed or has no non-localhost server |
 | `--ping-servers` | HTTP HEAD/GET each **operator-configured** deployment host (not URLs imported from specs). Blocks redirects and cloud-metadata IPs |
 | `--clean-cache` | Delete `.swagger-gen-cache/` after generation (recommended in CI) |
@@ -216,8 +219,9 @@ Private git URLs use whatever credentials `git` already has (SSH agent, credenti
 helper). The generator never prompts for a password. Tokens embedded in clone URLs
 are redacted from logs.
 
-Combined documents attach each service's host at the path level. If two services
-share the same path, prefer the per-service HTML for Try-it-out.
+Combined documents attach each service's host at the path level and tag
+operations by sub-project. If two services share the same path, prefer the
+portal or the per-service HTML for Try-it-out.
 
 ## Security notes
 
@@ -226,6 +230,9 @@ share the same path, prefer the per-service HTML for Try-it-out.
 - **Deployment hosts** — OpenAPI `servers` accept `http`/`https` only. `file://`,
   `javascript:`, and similar schemes are dropped. Localhost imported from a spec
   is replaced by your configured host.
+- **`--serve`** binds to loopback by default and proxies Try-it-out only to
+  hosts you configured. It does not follow redirects and refuses
+  loopback/cloud-metadata targets. Do not `--bind 0.0.0.0` on a shared network.
 - **`--ping-servers`** probes only hosts you set in config/CLI, does not follow
   redirects, and refuses loopback/cloud-metadata targets. Do not point it at
   untrusted URLs.
@@ -241,5 +248,5 @@ share the same path, prefer the per-service HTML for Try-it-out.
 
 ## Testing the generated docs
 
-See [`TESTING.md`](./TESTING.md) for serving the UI, using Try-it-out against
-the deployed host, curl examples, CORS/auth notes, and troubleshooting.
+See [`TESTING.md`](./TESTING.md) for serving the UI with `--serve` (CORS proxy),
+using Try-it-out against the deployed host, curl examples, and troubleshooting.

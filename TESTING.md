@@ -46,29 +46,45 @@ Output (default `./swagger-output/`):
 
 | File | Purpose |
 | --- | --- |
-| `index.html` | Catalog of every service and its deployment host |
-| `<service>.html` | Interactive Swagger UI for that service |
+| `index.html` | Portal: APIs grouped by sub-project, with search and in-page Swagger UI |
+| `<service>.html` | Interactive Swagger UI for that service (operations grouped by resource) |
 | `<service>.openapi.yaml` / `.json` | Machine-readable spec |
-| `combined.html` + `combined.openapi.*` | All services in one document |
+| `combined.html` + `combined.openapi.*` | All services in one document, tagged by project |
 
 ## 2. Open Swagger UI
 
-Do **not** rely on a `file://` URL for Try-it-out. Browsers treat that origin
-as opaque, and many APIs reject it. Serve the folder over HTTP:
+Authorization headers trigger a CORS preflight. Opening the HTML with
+`python -m http.server` (or `file://`) talks to the API **from the browser**,
+so you often see a 200 in DevTools and still get `Failed to fetch` / an empty
+body in Swagger UI.
+
+Use `--serve` so Try-it-out is same-origin and this process forwards the call
+to the deployed host (with configured auth):
+
+```bash
+export ORDERS_BEARER_TOKEN=…    # or the env vars named in config.yaml
+python -m swagger_gen --config config.yaml --serve
+```
+
+Then open:
+
+- http://127.0.0.1:8765/ — portal (sidebar by project, search, grouped endpoints)
+- http://127.0.0.1:8765/#user-service — one service in the portal
+- http://127.0.0.1:8765/user-service.html — standalone Swagger UI for that service
+- http://127.0.0.1:8765/combined.html — everything, grouped by project tag
+
+A yellow banner means the CORS proxy is on. The dropdown still shows the
+deployed URL; Execute is forwarded to that host from this process. Click
+**Authorize** if you did not export env vars (the proxy also attaches
+`auth` credentials from the environment when present).
+
+To serve files without the proxy (browser talks to the API directly):
 
 ```bash
 python -m http.server 8765 --directory swagger-output
 ```
 
-Then open:
-
-- http://127.0.0.1:8765/ — index
-- http://127.0.0.1:8765/user-service.html — one service
-- http://127.0.0.1:8765/combined.html — everything
-
-Serving the UI from localhost is fine. The **requests** still go to the host
-listed in the spec (`servers` / the scheme+host dropdown at the top of Swagger
-UI), not to `127.0.0.1:8765`.
+That only works if the API allows origin `http://127.0.0.1:8765`.
 
 Confirm before clicking **Try it out**:
 
@@ -133,7 +149,7 @@ python -m swagger_gen --config config.yaml --validate --check-api
    `https://orders.internal.example.com/health`.
 5. Status `2xx`/`4xx` from that host means the spec is talking to the right
    place (`4xx` is still a successful *routing* test). `Failed to fetch` is
-   almost always CORS or a wrong host — see [Troubleshooting](#troubleshooting).
+   almost always CORS — use `--serve` instead of `python -m http.server`.
 
 Suggested first calls on the sample repos (against *your* deployed stand-ins):
 
@@ -167,8 +183,8 @@ curl -sS -D- -X POST \
   https://orders.internal.example.com/orders
 ```
 
-curl is the right tool when the browser is blocked by CORS: it still proves
-the generated path, method, and host are correct.
+curl is still useful to prove the generated path without the UI. For Swagger UI
+itself, prefer `--serve` so CORS does not hide a successful 200.
 
 ## 5. Validate the spec (no live traffic)
 
@@ -268,8 +284,8 @@ for a password.
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
 | Try-it-out URL is `http://localhost:…` or the UI origin | No `host`/`servers`/`--server`, or the imported spec only had localhost and you did not override it | Set the deployed URL and regenerate. Confirm `host:` in the generator log |
-| `Failed to fetch` / CORS error in the browser | The API does not allow origin `http://127.0.0.1:8765` | Call the same URL with curl, or host the HTML on a origin the API allows |
-| `file://` page will not execute requests | Browser security around local files | Use `python -m http.server` as in step 2 |
+| `Failed to fetch` / CORS error / empty body after 200 | Browser blocked a cross-origin Try-it-out (common once `Authorization` is sent) | Use `python -m swagger_gen --config config.yaml --serve` instead of `python -m http.server` |
+| `file://` page will not execute requests | Browser security around local files | Use `--serve` |
 | 401 / 403 from the real host | Auth not sent, token expired, or IdP credentials wrong | Set `auth` + export env vars; click **Authorize**; or `--check-api` after exporting. For `oauth2`, confirm `token_url` and grant. |
 | 404 on a path that exists in the spec | Gateway prefix / `base_path` mismatch | Set `base_path` or put the prefix in `host` (e.g. `https://api.example.com/orders`) |
 | Combined UI hits the wrong service | Two repos share a path | Use the per-service `.html` file |
@@ -285,5 +301,5 @@ for a password.
 - [ ] `--check-api` returns 2xx (or a documented 404 on the probe path) with auth sent
 - [ ] Each `*.openapi.yaml` lists that host under `servers:`
 - [ ] Swagger UI dropdown shows the deployed URL
-- [ ] Execute at least one read operation; Request URL uses that host
-- [ ] If the browser is blocked, the same URL succeeds (or 401s) with curl
+- [ ] Open the UI via `--serve` and Execute a read operation; the response body appears
+- [ ] If you skip `--serve`, the same URL succeeds (or 401s) with curl

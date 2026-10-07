@@ -24,7 +24,9 @@ from .auth import (
 from .config import Config, ConfigError, OutputConfig, RepoConfig, load_config
 from .git_source import looks_like_git_url, repo_name_from_url
 from .openapi_builder import build_openapi
-from .output import write_index, write_spec
+from .output import _slug as spec_slug, write_spec
+from .portal import operations_for_spec, write_portal
+from .tags import pretty_tag
 from .scanner import cache_root, scan_all
 from .servers import merge_servers, parse_server_entries, redact_url, servers_from_host
 from .validate import join_host_path, ping_url, validate_openapi_doc
@@ -151,6 +153,21 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--serve", action="store_true",
+        help=(
+            "After generating, serve Swagger UI on localhost and proxy Try-it-out "
+            "to configured hosts (avoids browser CORS)."
+        ),
+    )
+    p.add_argument(
+        "--port", type=int, default=8765,
+        help="Port for --serve (default 8765).",
+    )
+    p.add_argument(
+        "--bind", default="127.0.0.1",
+        help="Bind address for --serve (default 127.0.0.1).",
+    )
+    p.add_argument(
         "--clean-cache", action="store_true",
         help="Delete the git clone cache after generation (recommended in CI).",
     )
@@ -240,6 +257,8 @@ def _config_from_args(args) -> Config:
         config.output.directory = args.output
     if args.formats:
         config.output.formats = args.formats
+    if args.serve and "html" not in config.output.formats:
+        config.output.formats = list(config.output.formats) + ["html"]
     return config
 
 
@@ -368,15 +387,23 @@ def main(argv: list[str] | None = None) -> int:
                 doc, out_dir, spec.name, config.output.formats, auth_prefill=prefill
             )
 
+        sid = spec_slug(spec.name)
         index_entries.append(
             {
+                "id": sid,
+                "name": spec.name,
                 "title": spec.title,
                 "version": spec.version,
                 "endpoint_count": endpoint_count,
                 "frameworks": spec.detected_frameworks,
                 "html": written["html"].name if "html" in written else None,
+                "spec_file": f"{sid}.openapi.json"
+                if "json" in config.output.formats
+                else "",
                 "servers": [s.url for s in spec.servers],
                 "auth": describe_auth(repo.auth),
+                "operations": operations_for_spec(spec),
+                "spec": doc,
             }
         )
 
@@ -391,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         write_spec(combined, out_dir, "combined", config.output.formats)
 
     if "html" in config.output.formats and index_entries:
-        index_path = write_index(out_dir, index_entries)
+        index_path = write_portal(out_dir, index_entries)
         print(f"\nIndex: {index_path}")
 
     print(f"Done. {total_endpoints} endpoints across {len(index_entries)} service(s).")
@@ -407,6 +434,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if had_error and not index_entries:
         return 1
+    if args.serve:
+        from .serve import serve_docs
+
+        bind = getattr(args, "bind", "127.0.0.1") or "127.0.0.1"
+        if bind not in {"127.0.0.1", "localhost", "::1"}:
+            print(
+                "warning: --bind is not loopback; the Try-it-out proxy will be "
+                "reachable on this interface. Prefer 127.0.0.1.",
+                file=sys.stderr,
+            )
+        serve_docs(out_dir, config, host=bind, port=int(args.port or 8765))
     if validation_failed:
         return 1
     return 0
@@ -421,14 +459,19 @@ def _combine(results) -> dict:
         spec = result.spec
         if spec is None:
             continue
+        label = spec.title or spec.name
         for ep in spec.endpoints:
             clone = copy.deepcopy(ep)
-            if spec.name not in clone.tags:
-                clone.tags = [spec.name] + clone.tags
+            clone.tags = [label]
             # Path-level servers so Try-it-out hits this service's deployed host.
             if spec.servers and not clone.servers:
                 clone.servers = list(spec.servers)
             merged.add_endpoint(clone)
+        fw = ", ".join(spec.detected_frameworks)
+        host = spec.servers[0].url if spec.servers else ""
+        merged.tag_meta[pretty_tag(label)] = " · ".join(
+            p for p in (fw, host) if p
+        )
         for name, scheme in spec.security_schemes.items():
             merged.add_security_scheme(scheme)
         for name, schema in spec.schemas.items():

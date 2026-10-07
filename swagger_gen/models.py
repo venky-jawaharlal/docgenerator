@@ -115,6 +115,7 @@ class ApiSpec:
     default_security: list[str] = field(default_factory=list)
     detected_frameworks: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    tag_meta: dict[str, str] = field(default_factory=dict)
 
     def add_endpoint(self, endpoint: Endpoint) -> None:
         """Add an endpoint, skipping exact (path, method) duplicates."""
