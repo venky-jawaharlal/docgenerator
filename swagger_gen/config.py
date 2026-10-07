@@ -179,18 +179,26 @@ def _apply_git(repo: RepoConfig, entry: dict | None, default: dict | None = None
             repo.git_username = str(entry.get("username") or entry.get("user")).strip()
     if entry and not repo.git_password and not repo.git_password_env and entry.get("password"):
         repo.git_password = str(entry["password"]).strip()
-    # Fill any still-empty clone field from API auth. A git token is not
-    # replaced by the API token, but a git username is kept.
-    if repo.auth:
-        if not repo.git_token and not repo.git_token_env:
-            repo.git_token = repo.auth.token
-            repo.git_token_env = repo.auth.token_env
-        if not repo.git_password and not repo.git_password_env:
-            repo.git_password = repo.auth.password
-            repo.git_password_env = repo.auth.password_env
-        if not repo.git_username and not repo.git_username_env:
-            repo.git_username = repo.auth.username
-            repo.git_username_env = repo.auth.username_env
+    fill_git_from_auth(repo)
+
+
+def fill_git_from_auth(repo: RepoConfig) -> None:
+    """Copy API username/token into empty git-clone fields.
+
+    A direct repo URL has no per-repo ``git:`` block, so clone credentials
+    come from ``default_git`` or from ``auth`` / ``default_auth``.
+    """
+    if not repo.auth:
+        return
+    if not repo.git_token and not repo.git_token_env:
+        repo.git_token = repo.auth.token
+        repo.git_token_env = repo.auth.token_env
+    if not repo.git_password and not repo.git_password_env:
+        repo.git_password = repo.auth.password
+        repo.git_password_env = repo.auth.password_env
+    if not repo.git_username and not repo.git_username_env:
+        repo.git_username = repo.auth.username
+        repo.git_username_env = repo.auth.username_env
 
 
 def _apply_servers(repo: RepoConfig, extra: list[Server] | None = None) -> None:
@@ -212,6 +220,7 @@ def _parse_repo_entry(
         repo = _repo_from_source(os.path.expanduser(entry))
         _apply_servers(repo, default_servers)
         repo.auth = default_auth
+        _apply_git(repo, None, default_git)
         return repo
     if not isinstance(entry, dict):
         raise ConfigError(f"Invalid repo entry: {entry!r}")
@@ -291,6 +300,7 @@ def load_config(config_path: str) -> Config:
             _apply_servers(repo, default_servers)
             if default_auth and not repo.auth:
                 repo.auth = default_auth
+            _apply_git(repo, None, default_git)
             repos.append(repo)
 
     if not repos:

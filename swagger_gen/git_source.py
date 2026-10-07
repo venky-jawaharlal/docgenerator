@@ -9,6 +9,7 @@ reject option-like URLs/refs so git argv cannot be steered.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import re
@@ -267,17 +268,18 @@ def _run_git(
             if arg.startswith(("http://", "https://")) and "=" not in arg and " " not in arg:
                 cmd.extend(["-c", f"url.{arg}.insteadof={arg}"])
     if bearer:
+        header = f"Authorization: Bearer {bearer}"
+    elif password:
+        # Send Basic on the first request. GitLab often answers 401 without a
+        # challenge that would make the credential helper run.
+        token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+        header = f"Authorization: Basic {token}"
+    else:
+        header = ""
+    if header:
         env["GIT_CONFIG_COUNT"] = "1"
         env["GIT_CONFIG_KEY_0"] = "http.extraheader"
-        env["GIT_CONFIG_VALUE_0"] = f"Authorization: Bearer {bearer}"
-    elif password:
-        env["SWAGGER_GEN_GIT_USER"] = username
-        env["SWAGGER_GEN_GIT_PASS"] = password
-        if askpass is not None:
-            env["GIT_ASKPASS"] = str(askpass)
-            env["SSH_ASKPASS"] = str(askpass)
-            env["SSH_ASKPASS_REQUIRE"] = "force"
-        cmd.extend(["-c", f"credential.helper={_CREDENTIAL_HELPER}"])
+        env["GIT_CONFIG_VALUE_0"] = header
     cmd.extend(args)
     try:
         return subprocess.run(
@@ -432,28 +434,41 @@ def _http_urls(url: str) -> list[str]:
     return urls
 
 
+def _looks_like_gitlab(url: str) -> bool:
+    parts = [url or ""]
+    https = _ssh_to_https(url)
+    if https:
+        parts.append(https)
+    blob = " ".join(parts).lower()
+    return "gitlab" in blob
+
+
 def _clone_attempts(
     url: str, username: str, password: str, username_explicit: bool
 ) -> list[tuple[str, str, bool]]:
     """``(url, username, bearer)`` attempts, configured login first.
 
-    ``username_explicit`` is accepted for callers that already chose a
-    username. Fallback usernames still run after that login is rejected:
-    GitHub accepts ``x-access-token``, GitLab accepts ``oauth2``. A bearer
-    header is tried last. SSH URLs are cloned over https when a token or
-    password is set, because SSH cannot use that secret.
+    GitLab personal, project, and group access tokens authenticate as
+    ``oauth2`` (deploy tokens keep their own username; CI job tokens use
+    ``gitlab-ci-token``). GitHub accepts ``x-access-token``. Those fallbacks
+    run after the configured username is rejected. SSH URLs are cloned over
+    https when a token or password is set, because SSH cannot use that secret.
     """
-    del username_explicit  # configured username is already first
     if not password:
         return [(url, username, False)]
+    gitlab = _looks_like_gitlab(url)
+    # The GitHub default username is rejected by GitLab before oauth2 is tried.
+    if gitlab and not username_explicit and username == "x-access-token":
+        username = ""
+    preferred = ["oauth2", "gitlab-ci-token"] if gitlab else ["x-access-token", "oauth2"]
     users: list[str] = []
-    for candidate in (username, "x-access-token", "oauth2", "git"):
+    for candidate in (username, *preferred, "x-access-token", "git"):
         if candidate and candidate not in users:
             users.append(candidate)
     urls = _http_urls(url)
     attempts = [(candidate, user, False) for candidate in urls for user in users]
     for candidate in urls:
-        attempts.append((candidate, username or "x-access-token", True))
+        attempts.append((candidate, users[0], True))
     return attempts
 
 
@@ -527,7 +542,7 @@ def clone_or_update(
     askpass = _ensure_askpass(cache_root) if password else None
 
     if password and not username and not username_explicit:
-        username = "x-access-token"
+        username = "oauth2" if _looks_like_gitlab(url) else "x-access-token"
 
     dest = _cache_dir_for(url, ref, cache_root)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -647,7 +662,9 @@ def clone_or_update(
     if saw_auth:
         message += (
             " GitHub tokens use username x-access-token."
-            " GitLab tokens need username oauth2."
+            " GitLab personal, project, and group tokens use username oauth2"
+            " and need the read_repository scope; deploy tokens use the"
+            " username GitLab shows next to the token."
             " Bitbucket needs your account username with the app password."
         )
     raise SourceError(message)

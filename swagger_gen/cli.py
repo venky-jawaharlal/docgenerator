@@ -21,7 +21,7 @@ from .auth import (
     request_headers,
     swagger_prefill,
 )
-from .config import Config, ConfigError, OutputConfig, RepoConfig, load_config
+from .config import Config, ConfigError, OutputConfig, RepoConfig, fill_git_from_auth, load_config
 from .git_source import looks_like_git_url, repo_name_from_url
 from .openapi_builder import build_openapi
 from .output import _slug as spec_slug, write_spec
@@ -250,6 +250,7 @@ def _config_from_args(args) -> Config:
             if cli_auth:
                 repo.auth = cli_auth
             _apply_git_cli(repo, args)
+            fill_git_from_auth(repo)
             repos.append(repo)
         config = Config(output=OutputConfig(), repos=repos)
     else:
@@ -262,6 +263,7 @@ def _config_from_args(args) -> Config:
                 repo.auth = cli_auth
         for repo in config.repos:
             _apply_git_cli(repo, args)
+            fill_git_from_auth(repo)
     if args.embed_auth:
         for repo in config.repos:
             if repo.auth:
