@@ -64,6 +64,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Git branch, tag, or commit to check out when --repo is a git URL.",
     )
     p.add_argument(
+        "--git-token-env",
+        help="Env var with an HTTPS git token (PAT) used to clone private --repo URLs.",
+    )
+    p.add_argument(
+        "--git-username-env",
+        help="Env var with the git HTTPS username (default for a token is x-access-token).",
+    )
+    p.add_argument(
+        "--git-password-env",
+        help="Env var with the git HTTPS password, when not using a token.",
+    )
+    p.add_argument(
         "--server", action="append", dest="servers", metavar="URL",
         help=(
             "Deployment host for Try-it-out requests (repeatable). "
@@ -206,6 +218,15 @@ def _cli_auth(args):
     )
 
 
+def _apply_git_cli(repo: RepoConfig, args) -> None:
+    if getattr(args, "git_token_env", None):
+        repo.git_token_env = args.git_token_env
+    if getattr(args, "git_username_env", None):
+        repo.git_username_env = args.git_username_env
+    if getattr(args, "git_password_env", None):
+        repo.git_password_env = args.git_password_env
+
+
 def _config_from_args(args) -> Config:
     cli_servers = _cli_servers(args)
     cli_auth = _cli_auth(args)
@@ -228,6 +249,7 @@ def _config_from_args(args) -> Config:
                 )
             if cli_auth:
                 repo.auth = cli_auth
+            _apply_git_cli(repo, args)
             repos.append(repo)
         config = Config(output=OutputConfig(), repos=repos)
     else:
@@ -238,6 +260,8 @@ def _config_from_args(args) -> Config:
         if cli_auth:
             for repo in config.repos:
                 repo.auth = cli_auth
+        for repo in config.repos:
+            _apply_git_cli(repo, args)
     if args.embed_auth:
         for repo in config.repos:
             if repo.auth:

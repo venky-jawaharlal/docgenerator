@@ -103,6 +103,11 @@ repos:
   #   url: https://github.com/example/payments-service.git
   #   ref: main                    # branch, tag, or commit (optional)
   #   host: https://payments.example.com
+  #   git:                         # HTTPS clone credentials (never commit the secret)
+  #     token_env: GH_TOKEN        # GitHub PAT; username defaults to x-access-token
+  #     # username: oauth2         # GitLab personal/project token
+  #     # username_env: GIT_USER
+  #     # password_env: GIT_PASSWORD
   #   # path: /already/cloned/payments-service   # optional local override
 
 # ...or point to a plain-text file of local paths and/or git URLs (one per

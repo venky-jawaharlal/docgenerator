@@ -83,6 +83,8 @@ sub-project in a sidebar (search, then open a service to try it). Follow
 | `-f, --formats ...` | Override output formats (`yaml json html`) |
 | `--repo PATH_OR_URL` | Local directory or git URL (repeatable); skips config repos |
 | `--ref REF` | Branch, tag, or commit to check out for git `--repo` URLs |
+| `--git-token-env` | Env var with an HTTPS git token used to clone private repos |
+| `--git-username-env` / `--git-password-env` | Env vars for git HTTPS username and password |
 | `--server URL` | Deployment host for Try-it-out (repeatable). With `--repo`, applied to every source; with `--config`, prepended to each repo's hosts |
 | `--host URL` | Shorthand for a single `--server` |
 | `--auth-type` | `bearer` / `jwt` / `basic` / `apikey` / `header` / `oauth2` for the live instance |
@@ -140,9 +142,12 @@ repos:
       # client_secret_env: USERS_CLIENT_SECRET
 
   # Remote git (cloned on demand). `ref` is optional.
+  # Put the clone token in the environment, not in this file.
   - name: orders-service
     url: https://github.com/org/orders-service.git
     ref: main
+    git:
+      token_env: GH_TOKEN          # GitHub PAT. GitLab: username: oauth2
     servers:
       - url: https://orders.example.com
         description: Production
@@ -215,9 +220,12 @@ file is imported verbatim and takes priority (except localhost `servers`, which
 are replaced by your configured host). Django routes have no HTTP verb in
 the URLconf, so they are documented as `GET` with a note.
 
-Private git URLs use whatever credentials `git` already has (SSH agent, credential
-helper). The generator never prompts for a password. Tokens embedded in clone URLs
-are redacted from logs.
+Private HTTPS git URLs can take a token or username and password from
+`git.token_env` / `git.username_env` / `git.password_env` (or `--git-token-env`).
+The secret is passed to git through a private askpass helper and is not stored
+in the clone URL or the generated docs. SSH URLs (`git@…`) still use your SSH
+agent. The generator never prompts for a password. Tokens embedded in clone URLs
+are stripped before clone and redacted from logs.
 
 Combined documents attach each service's host at the path level and tag
 operations by sub-project. If two services share the same path, prefer the

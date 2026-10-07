@@ -49,6 +49,13 @@ class RepoConfig:
     host: Optional[str] = None
     servers: list[Server] = field(default_factory=list)
     auth: Optional[AuthConfig] = None
+    # HTTPS git clone credentials. Values are env var names or ${VAR} refs.
+    git_token: str = ""
+    git_token_env: str = ""
+    git_username: str = ""
+    git_username_env: str = ""
+    git_password: str = ""
+    git_password_env: str = ""
     # Force a set of frameworks instead of auto-detecting.
     frameworks: Optional[list[str]] = None
     # Extra directories (relative to repo) to skip during scanning.
@@ -119,6 +126,36 @@ def _repo_from_source(source: str, name: Optional[str] = None) -> RepoConfig:
     )
 
 
+def _git_value(raw: dict, entry: dict, key: str, default: str = "") -> str:
+    if isinstance(raw, dict) and raw.get(key) not in (None, ""):
+        return str(raw.get(key))
+    flat = entry.get(f"git_{key}")
+    if flat not in (None, ""):
+        return str(flat)
+    return default
+
+
+def _apply_git(repo: RepoConfig, entry: dict | None, default: dict | None = None) -> None:
+    raw = {}
+    if entry:
+        block = entry.get("git")
+        if isinstance(block, str):
+            raw = {"token_env": block}
+        elif isinstance(block, dict):
+            raw = block
+    base = default or {}
+    repo.git_token = _git_value(raw, entry or {}, "token", str(base.get("token") or ""))
+    repo.git_token_env = _git_value(raw, entry or {}, "token_env", str(base.get("token_env") or ""))
+    repo.git_username = _git_value(raw, entry or {}, "username", str(base.get("username") or ""))
+    repo.git_username_env = _git_value(
+        raw, entry or {}, "username_env", str(base.get("username_env") or "")
+    )
+    repo.git_password = _git_value(raw, entry or {}, "password", str(base.get("password") or ""))
+    repo.git_password_env = _git_value(
+        raw, entry or {}, "password_env", str(base.get("password_env") or "")
+    )
+
+
 def _apply_servers(repo: RepoConfig, extra: list[Server] | None = None) -> None:
     declared = merge_servers(
         servers_from_host(repo.host),
@@ -129,7 +166,10 @@ def _apply_servers(repo: RepoConfig, extra: list[Server] | None = None) -> None:
 
 
 def _parse_repo_entry(
-    entry, default_servers: list[Server], default_auth: AuthConfig | None = None
+    entry,
+    default_servers: list[Server],
+    default_auth: AuthConfig | None = None,
+    default_git: dict | None = None,
 ) -> RepoConfig:
     if isinstance(entry, str):
         repo = _repo_from_source(os.path.expanduser(entry))
@@ -165,6 +205,7 @@ def _parse_repo_entry(
         frameworks=entry.get("frameworks"),
         exclude=list(entry.get("exclude", []) or []),
     )
+    _apply_git(repo, entry, default_git)
     _apply_servers(repo, default_servers)
     return repo
 
@@ -198,10 +239,11 @@ def load_config(config_path: str) -> Config:
         parse_server_entries(data.get("default_servers") or data.get("servers")),
     )
     default_auth = parse_auth_entry(data.get("default_auth") or data.get("auth"))
+    default_git = data.get("default_git") if isinstance(data.get("default_git"), dict) else None
 
     repos: list[RepoConfig] = []
     for entry in data.get("repos", []) or []:
-        repos.append(_parse_repo_entry(entry, default_servers, default_auth))
+        repos.append(_parse_repo_entry(entry, default_servers, default_auth, default_git))
 
     repos_file = data.get("repos_file")
     if repos_file:

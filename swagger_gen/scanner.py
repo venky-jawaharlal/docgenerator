@@ -14,7 +14,13 @@ from pathlib import Path
 from .analyzers import ALL_ANALYZERS, ANALYZERS_BY_NAME, RepoContext
 from .auth import apply_auth_to_spec
 from .config import Config, RepoConfig
-from .git_source import SourceError, clone_or_update, looks_like_git_url
+from .git_source import (
+    SourceError,
+    clone_or_update,
+    looks_like_git_url,
+    resolve_git_auth,
+    strip_git_userinfo,
+)
 from .models import ApiSpec
 from .servers import drop_localhost, merge_servers
 
@@ -38,9 +44,23 @@ def resolve_repo(repo: RepoConfig, cache_root: Path) -> str:
         url = local
 
     if url:
-        cloned = clone_or_update(url, repo.ref, cache_root)
+        clean, embedded_user, embedded_pass = strip_git_userinfo(url)
+        username, password = resolve_git_auth(
+            token=repo.git_token,
+            token_env=repo.git_token_env,
+            username=repo.git_username,
+            username_env=repo.git_username_env,
+            password=repo.git_password,
+            password_env=repo.git_password_env,
+        )
+        if not password and embedded_pass:
+            password = embedded_pass
+            username = username or embedded_user
+        cloned = clone_or_update(
+            clean, repo.ref, cache_root, username=username, password=password
+        )
         repo.resolved_path = str(cloned)
-        repo.url = url
+        repo.url = clean
         return str(cloned)
 
     missing = local or "(no path or url)"

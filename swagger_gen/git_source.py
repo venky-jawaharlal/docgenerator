@@ -13,8 +13,10 @@ import hashlib
 import os
 import re
 import shutil
+import stat
 import subprocess
 from pathlib import Path
+from urllib.parse import unquote, urlparse, urlunparse
 
 from .servers import redact_url
 
@@ -138,12 +140,81 @@ def _git_env() -> dict[str, str]:
     return env
 
 
+_ASKPASS_SCRIPT = """#!/usr/bin/env python3
+import os
+import sys
+prompt = (sys.argv[1] if len(sys.argv) > 1 else "").lower()
+if "username" in prompt:
+    sys.stdout.write(os.environ.get("SWAGGER_GEN_GIT_USER", ""))
+else:
+    sys.stdout.write(os.environ.get("SWAGGER_GEN_GIT_PASS", ""))
+"""
+
+
+def _ensure_askpass(cache_root: Path) -> Path:
+    path = cache_root / ".git-askpass"
+    if not path.is_file() or path.read_text(encoding="utf-8") != _ASKPASS_SCRIPT:
+        path.write_text(_ASKPASS_SCRIPT, encoding="utf-8")
+    path.chmod(stat.S_IRWXU)
+    return path
+
+
+def strip_git_userinfo(url: str) -> tuple[str, str, str]:
+    """Return (url without userinfo, username, password).
+
+    ``https://<token>@host/repo.git`` treats the token as the password.
+    """
+    raw = (url or "").strip()
+    if "://" not in raw:
+        return raw, "", ""
+    parsed = urlparse(raw)
+    if not (parsed.username or parsed.password):
+        return raw, "", ""
+    user = unquote(parsed.username or "")
+    password = unquote(parsed.password or "")
+    if user and not password:
+        password = user
+        user = "x-access-token"
+    host = parsed.hostname or ""
+    netloc = f"{host}:{parsed.port}" if parsed.port else host
+    clean = urlunparse(parsed._replace(netloc=netloc))
+    return clean, user, password
+
+
+def resolve_git_auth(
+    *,
+    token: str = "",
+    token_env: str = "",
+    username: str = "",
+    username_env: str = "",
+    password: str = "",
+    password_env: str = "",
+) -> tuple[str, str]:
+    """Resolve HTTPS clone credentials. Empty password means use git's own helper."""
+    from .auth import _from_env
+
+    secret = _from_env(password, password_env) or _from_env(token, token_env)
+    user = _from_env(username, username_env)
+    if secret and not user:
+        user = "x-access-token"
+    return user, secret
+
+
 def _run_git(
     args: list[str],
     cwd: Path | None = None,
     timeout: int = _FETCH_TIMEOUT_SEC,
+    *,
+    username: str = "",
+    password: str = "",
+    askpass: Path | None = None,
 ) -> subprocess.CompletedProcess:
     env = _git_env()
+    if password and askpass is not None:
+        env["GIT_ASKPASS"] = str(askpass)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["SWAGGER_GEN_GIT_USER"] = username
+        env["SWAGGER_GEN_GIT_PASS"] = password
     # Never run repo hooks; never materialize symlinks from untrusted trees.
     cmd = [
         "git",
@@ -183,21 +254,32 @@ def _cache_dir_for(url: str, ref: str | None, cache_root: Path) -> Path:
     return cache_root / f"{slug}-{digest}"
 
 
-def _sanitize_git_output(text: str, url: str) -> str:
+def _sanitize_git_output(text: str, url: str, *secrets: str) -> str:
     redacted = redact_url(url)
     blob = (text or "").strip()
     if url:
         blob = blob.replace(url, redacted)
+    for secret in secrets:
+        if secret and len(secret) >= 4:
+            blob = blob.replace(secret, "****")
     # Also strip any remaining user:password@ patterns.
     blob = re.sub(r"://[^/\s:@]+:[^/\s@]+@", "://****@", blob)
     return blob[:2000]
 
 
-def clone_or_update(url: str, ref: str | None, cache_root: Path) -> Path:
+def clone_or_update(
+    url: str,
+    ref: str | None,
+    cache_root: Path,
+    *,
+    username: str = "",
+    password: str = "",
+) -> Path:
     """Shallow-clone ``url`` (optional ``ref``) into ``cache_root`` and return the path.
 
-    Reuses an existing clone of the same URL+ref when present. Private repos
-    rely on git's already-configured credentials (helper, SSH agent, etc.).
+    Reuses an existing clone of the same URL+ref when present. HTTPS credentials
+    are supplied through a private askpass helper and are not written into the
+    remote URL. SSH URLs still use the local SSH agent.
     """
     if not _git_available():
         raise SourceError(
@@ -205,23 +287,38 @@ def clone_or_update(url: str, ref: str | None, cache_root: Path) -> Path:
             "Install git, or point the config at a local path instead."
         )
     url = _normalize_git_url(url)
+    url, embedded_user, embedded_pass = strip_git_userinfo(url)
+    if not password and embedded_pass:
+        password = embedded_pass
+        username = username or embedded_user
     _assert_safe_git_url(url)
     _assert_safe_ref(ref or "")
 
     cache_root.mkdir(parents=True, exist_ok=True)
     _chmod_private(cache_root)
+    askpass = _ensure_askpass(cache_root) if password else None
 
     dest = _cache_dir_for(url, ref, cache_root)
     dest.parent.mkdir(parents=True, exist_ok=True)
+
+    def git(args: list[str], cwd: Path | None = None, timeout: int = _FETCH_TIMEOUT_SEC):
+        return _run_git(
+            args,
+            cwd=cwd,
+            timeout=timeout,
+            username=username,
+            password=password,
+            askpass=askpass,
+        )
 
     if (dest / ".git").is_dir():
         fetch_args = ["fetch", "--depth", "1", "origin"]
         if ref:
             fetch_args.append(ref)
-        fetched = _run_git(fetch_args, cwd=dest, timeout=_FETCH_TIMEOUT_SEC)
+        fetched = git(fetch_args, cwd=dest, timeout=_FETCH_TIMEOUT_SEC)
         if fetched.returncode == 0:
             target = ref or "FETCH_HEAD"
-            checked = _run_git(["checkout", "--force", target], cwd=dest)
+            checked = git(["checkout", "--force", target], cwd=dest)
             if checked.returncode == 0:
                 _chmod_private(dest)
                 return dest
@@ -234,7 +331,7 @@ def clone_or_update(url: str, ref: str | None, cache_root: Path) -> Path:
     if ref:
         clone_args += ["--branch", ref]
     clone_args += [url, str(dest)]
-    cloned = _run_git(clone_args, timeout=_CLONE_TIMEOUT_SEC)
+    cloned = git(clone_args, timeout=_CLONE_TIMEOUT_SEC)
     if cloned.returncode == 0:
         _chmod_private(dest)
         return dest
@@ -242,19 +339,21 @@ def clone_or_update(url: str, ref: str | None, cache_root: Path) -> Path:
     # ``--branch`` only works for branches/tags. Retry without it for SHAs.
     if ref:
         shutil.rmtree(dest, ignore_errors=True)
-        cloned = _run_git(
+        cloned = git(
             ["clone", f"--template={template}", url, str(dest)],
             timeout=_CLONE_TIMEOUT_SEC,
         )
         if cloned.returncode == 0:
-            checked = _run_git(["checkout", "--force", ref], cwd=dest)
+            checked = git(["checkout", "--force", ref], cwd=dest)
             if checked.returncode == 0:
                 _chmod_private(dest)
                 return dest
             raise SourceError(
                 f"Cloned {redact_url(url)} but could not check out the requested ref. "
-                f"{_sanitize_git_output(checked.stderr or checked.stdout, url)}"
+                f"{_sanitize_git_output(checked.stderr or checked.stdout, url, username, password)}"
             )
 
-    detail = _sanitize_git_output(cloned.stderr or cloned.stdout, url) or "git clone failed"
+    detail = _sanitize_git_output(
+        cloned.stderr or cloned.stdout, url, username, password
+    ) or "git clone failed"
     raise SourceError(f"Failed to clone {redact_url(url)}: {detail}")
