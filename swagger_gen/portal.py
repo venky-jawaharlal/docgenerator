@@ -12,7 +12,7 @@ from .output import (
     _slug,
     _spec_json,
 )
-from .tags import operation_tags
+from .tags import subproject_name
 
 _METHOD_ORDER = ("get", "post", "put", "patch", "delete", "head", "options")
 
@@ -83,6 +83,19 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
       border-radius: 999px; padding: 2px 8px; white-space: nowrap;
     }
     .nav a.svc.active .count { background: #1e3a8a; color: #bbf7d0; }
+    .tree { margin-bottom: 8px; }
+    .subs { margin: 0 0 6px 10px; padding-left: 10px; border-left: 1px solid #334155; }
+    .nav a.sub {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      text-decoration: none; color: #cbd5e1; font-size: 13px;
+      padding: 6px 8px; border-radius: 6px;
+    }
+    .nav a.sub:hover { background: var(--panel-2); color: #fff; }
+    .nav a.sub.active { background: #1e3a8a; color: #fff; }
+    .nav a.sub .count {
+      color: #94a3b8; font-size: 11px; font-weight: 700;
+    }
+    .nav a.sub.active .count { color: #bbf7d0; }
     .overview-link {
       display: block; margin: 0 10px 8px; padding: 8px 10px; border-radius: 8px;
       color: var(--accent); text-decoration: none; font-size: 13px; font-weight: 600;
@@ -117,12 +130,10 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
       background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
       margin-bottom: 14px; overflow: hidden;
     }
-    .project summary {
-      list-style: none; cursor: pointer; display: flex; align-items: center;
-      justify-content: space-between; gap: 12px; padding: 14px 16px;
+    .summary-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 14px 16px;
     }
-    .project summary::-webkit-details-marker { display: none; }
-    .project summary:hover { background: #f8fafc; }
     .project .ptitle { font-weight: 700; }
     .project .psub { color: #64748b; font-size: 12px; margin-top: 3px; }
     .ops { border-top: 1px solid #e2e8f0; }
@@ -145,11 +156,13 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
     .verb.HEAD, .verb.OPTIONS { background: #475569; }
     .path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
     .sum { color: #64748b; font-size: 12px; margin-top: 2px; }
+    a.tag-h { display: block; text-decoration: none; }
     .tag-h {
       padding: 8px 16px 4px; font-size: 11px; font-weight: 700;
       text-transform: uppercase; letter-spacing: .06em; color: #64748b;
       background: #f8fafc; border-top: 1px solid #e2e8f0;
     }
+    a.tag-h:hover { color: #1d4ed8; }
     .empty { color: #64748b; padding: 24px; text-align: center; }
     .swagger-wrap { background: #fff; border-radius: 12px; border: 1px solid #e2e8f0; }
     .swagger-wrap .swagger-ui { font-family: inherit; }
@@ -233,28 +246,62 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
       return blob.indexOf(query) !== -1;
     }
 
+    function groupsFor(svc, query) {
+      const map = {};
+      (svc.operations || []).forEach(function(op) {
+        if (!matches(svc, op, query)) return;
+        const id = op.groupId || 'api';
+        if (!map[id]) map[id] = { id: id, name: op.group || 'API', count: 0 };
+        map[id].count += 1;
+      });
+      return Object.keys(map).map(function(k) { return map[k]; }).sort(function(a, b) {
+        return a.name.localeCompare(b.name);
+      });
+    }
+
     function renderNav(query) {
+      const route = currentRoute();
       const html = [];
       (catalog.services || []).forEach(function(svc) {
-        const ops = (svc.operations || []).filter(function(op) { return matches(svc, op, query); });
-        if (query && !ops.length && !matches(svc, null, query)) return;
-        const n = query ? ops.length : svc.endpoint_count;
+        const groups = groupsFor(svc, query);
+        if (query && !groups.length && !matches(svc, null, query)) return;
+        const n = query
+          ? groups.reduce(function(s, g) { return s + g.count; }, 0)
+          : svc.endpoint_count;
+        html.push('<div class="tree">');
         html.push(
           '<a class="svc" data-id="' + svc.id + '" href="#' + encodeURIComponent(svc.id) + '">' +
             '<div><div class="name"></div><div class="meta"></div></div>' +
             '<span class="count">' + n + '</span></a>'
         );
+        html.push('<div class="subs">');
+        groups.forEach(function(g) {
+          html.push(
+            '<a class="sub" data-id="' + svc.id + '" data-group="' + g.id + '" href="#' +
+            encodeURIComponent(svc.id) + '/' + encodeURIComponent(g.id) + '">' +
+            '<span class="name"></span><span class="count">' + g.count + '</span></a>'
+          );
+        });
+        html.push('</div></div>');
       });
       nav.innerHTML = html.join('') || '<div class="empty">No matching projects</div>';
-      Array.prototype.forEach.call(nav.querySelectorAll('a.svc'), function(a, idx) {
-        const visible = (catalog.services || []).filter(function(svc) {
-          const ops = (svc.operations || []).filter(function(op) { return matches(svc, op, query); });
-          return !query || ops.length || matches(svc, null, query);
+      let gi = 0;
+      (catalog.services || []).forEach(function(svc) {
+        const groups = groupsFor(svc, query);
+        if (query && !groups.length && !matches(svc, null, query)) return;
+        const trees = nav.querySelectorAll('.tree');
+        const tree = trees[gi++];
+        if (!tree) return;
+        const parent = tree.querySelector('a.svc');
+        parent.querySelector('.name').textContent = svc.title;
+        parent.querySelector('.meta').textContent = (svc.frameworks || []).join(', ') || 'API';
+        parent.classList.toggle('active', route.svc === svc.id && !route.group);
+        const links = tree.querySelectorAll('a.sub');
+        groups.forEach(function(g, i) {
+          if (!links[i]) return;
+          links[i].querySelector('.name').textContent = g.name;
+          links[i].classList.toggle('active', route.svc === svc.id && route.group === g.id);
         });
-        const svc = visible[idx];
-        if (!svc) return;
-        a.querySelector('.name').textContent = svc.title;
-        a.querySelector('.meta').textContent = (svc.frameworks || []).join(', ') || 'API';
       });
     }
 
@@ -262,11 +309,12 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
       const groups = {};
       (svc.operations || []).forEach(function(op) {
         if (!matches(svc, op, query)) return;
-        const tag = op.tag || 'API';
-        (groups[tag] = groups[tag] || []).push(op);
+        const id = op.groupId || 'api';
+        if (!groups[id]) groups[id] = { id: id, name: op.group || 'API', ops: [] };
+        groups[id].ops.push(op);
       });
-      Object.keys(groups).forEach(function(tag) {
-        groups[tag].sort(function(a, b) {
+      Object.keys(groups).forEach(function(id) {
+        groups[id].ops.sort(function(a, b) {
           const d = methodOrder(a.method) - methodOrder(b.method);
           return d !== 0 ? d : (a.path || '').localeCompare(b.path || '');
         });
@@ -275,8 +323,8 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
     }
 
     function opRow(svc, op) {
-      const href = '#' + encodeURIComponent(svc.id);
-      return '<a class="op" href="' + href + '" data-jump="' + encodeURIComponent(op.operationId || '') + '">' +
+      const href = '#' + encodeURIComponent(svc.id) + '/' + encodeURIComponent(op.groupId || 'api');
+      return '<a class="op" href="' + href + '">' +
         '<span class="verb ' + op.method + '">' + op.method + '</span>' +
         '<span><div class="path"></div><div class="sum"></div></span></a>';
     }
@@ -291,25 +339,26 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
       const parts = [];
       if (!query) {
         parts.push('<div class="hero"><h2>Projects</h2>' +
-          '<p>APIs grouped by sub-project. Pick a service in the sidebar or expand a group.</p></div>');
+          '<p>Each repo lists its sub-projects in the left pane. Open one to try its APIs.</p></div>');
       }
       let any = false;
       (catalog.services || []).forEach(function(svc) {
         const groups = groupedOps(svc, query);
-        const tags = Object.keys(groups);
+        const tags = Object.keys(groups).sort(function(a, b) {
+          return groups[a].name.localeCompare(groups[b].name);
+        });
         if (!tags.length) return;
         any = true;
-        const count = tags.reduce(function(n, t) { return n + groups[t].length; }, 0);
-        const open = query ? ' open' : '';
+        const count = tags.reduce(function(n, t) { return n + groups[t].ops.length; }, 0);
         let body = '';
-        tags.sort().forEach(function(tag) {
+        tags.forEach(function(tag) {
           body += '<div class="tag-h"></div>';
-          groups[tag].forEach(function(op) { body += opRow(svc, op); });
+          groups[tag].ops.forEach(function(op) { body += opRow(svc, op); });
         });
-        parts.push('<details class="project"' + open + '>' +
-          '<summary><div><div class="ptitle"></div><div class="psub"></div></div>' +
-          '<span class="pill">' + count + ' APIs</span></summary>' +
-          '<div class="ops">' + body + '</div></details>');
+        parts.push('<section class="project">' +
+          '<div class="summary-row"><div><div class="ptitle"></div><div class="psub"></div></div>' +
+          '<span class="pill">' + count + ' APIs</span></div>' +
+          '<div class="ops">' + body + '</div></section>');
       });
       content.innerHTML = parts.join('') || '<div class="empty">No endpoints match that search.</div>';
       const blocks = content.querySelectorAll('.project');
@@ -324,12 +373,12 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
         block.querySelector('.psub').textContent =
           [(svc.frameworks || [])[0] || '', host].filter(Boolean).join(' · ');
         const heads = block.querySelectorAll('.tag-h');
-        tags.sort().forEach(function(tag, i) {
-          heads[i].textContent = tag;
+        tags.sort(function(a, b) { return groups[a].name.localeCompare(groups[b].name); }).forEach(function(tag, i) {
+          heads[i].textContent = groups[tag].name;
           const rows = [];
           let node = heads[i].nextElementSibling;
           while (node && node.classList.contains('op')) { rows.push(node); node = node.nextElementSibling; }
-          groups[tag].forEach(function(op, j) {
+          groups[tag].ops.forEach(function(op, j) {
             if (!rows[j]) return;
             rows[j].querySelector('.path').textContent = op.path;
             rows[j].querySelector('.sum').textContent = op.summary || '';
@@ -404,14 +453,36 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
       window.ui = ui;
     }
 
-    async function renderService(id, query) {
+    function filterSpec(spec, groupName, pathSet) {
+      const copy = JSON.parse(JSON.stringify(spec));
+      const keep = {};
+      Object.keys(copy.paths || {}).forEach(function(p) {
+        if (!pathSet[p]) return;
+        const item = copy.paths[p];
+        Object.keys(item).forEach(function(method) {
+          const op = item[method];
+          if (!op || typeof op !== 'object' || !op.responses) return;
+          op.tags = [groupName];
+        });
+        keep[p] = item;
+      });
+      copy.paths = keep;
+      copy.tags = [{ name: groupName }];
+      if (copy.info) {
+        copy.info.description = String(copy.info.description || '').split('\\n\\nGenerator notes:')[0];
+      }
+      return copy;
+    }
+
+    async function renderService(id, groupId, query) {
       const svc = (catalog.services || []).find(function(s) { return s.id === id; });
       if (!svc) { location.hash = 'overview'; return; }
       overviewLink.classList.remove('active');
-      Array.prototype.forEach.call(nav.querySelectorAll('a.svc'), function(a) {
-        a.classList.toggle('active', a.getAttribute('data-id') === id);
-      });
-      crumb.innerHTML = svc.title + (query ? ' <span>filtered</span>' : '');
+      const groups = groupedOps(svc, query);
+      const group = groupId ? groups[groupId] : null;
+      crumb.innerHTML = group
+        ? svc.title + ' <span>/ ' + group.name + '</span>'
+        : svc.title;
       pills.innerHTML = '';
       if (svc.auth) {
         const p = document.createElement('span');
@@ -425,9 +496,29 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
         p.textContent = svc.servers[0];
         pills.appendChild(p);
       }
-      if (query) {
-        renderOverview(query);
-        crumb.innerHTML = svc.title + ' <span>filtered</span>';
+      if (!group) {
+        destroyUi();
+        const tags = Object.keys(groups);
+        let body = '';
+        tags.sort(function(a, b) { return groups[a].name.localeCompare(groups[b].name); }).forEach(function(tag) {
+          body += '<a class="tag-h" href="#' + encodeURIComponent(svc.id) + '/' + encodeURIComponent(tag) + '"></a>';
+          groups[tag].ops.forEach(function(op) { body += opRow(svc, op); });
+        });
+        content.innerHTML = '<div class="hero"><h2></h2><p>Sub-projects for this repo. Pick one on the left to try it out.</p></div>' +
+          '<section class="project"><div class="ops">' + body + '</div></section>';
+        content.querySelector('h2').textContent = svc.title;
+        const heads = content.querySelectorAll('.tag-h');
+        tags.sort(function(a, b) { return groups[a].name.localeCompare(groups[b].name); }).forEach(function(tag, i) {
+          heads[i].textContent = groups[tag].name;
+          const rows = [];
+          let node = heads[i].nextElementSibling;
+          while (node && node.classList.contains('op')) { rows.push(node); node = node.nextElementSibling; }
+          groups[tag].ops.forEach(function(op, j) {
+            if (!rows[j]) return;
+            rows[j].querySelector('.path').textContent = op.path;
+            rows[j].querySelector('.sum').textContent = op.summary || '';
+          });
+        });
         return;
       }
       let spec = svc.spec || null;
@@ -445,33 +536,34 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
         if (href) content.querySelector('a').textContent = svc.title;
         return;
       }
-      mountSwagger(spec, svc.auth_prefill || {});
+      const paths = {};
+      group.ops.forEach(function(op) { paths[op.path] = true; });
+      mountSwagger(filterSpec(spec, group.name, paths), svc.auth_prefill || {});
     }
 
-    let activeService = 'overview';
-
-    function currentId() {
+    function currentRoute() {
       const raw = (location.hash || '#overview').replace(/^#/, '');
       const h = decodeURIComponent(raw.replace(/^\//, ''));
-      const first = (h.split('/')[0] || '').trim();
-      if (!first || first === 'overview') return 'overview';
-      if ((catalog.services || []).some(function(s) { return s.id === first; })) return first;
-      return activeService || 'overview';
+      const bits = h.split('/').filter(Boolean);
+      const first = (bits[0] || '').trim();
+      if (!first || first === 'overview') return { svc: '', group: '' };
+      if (!(catalog.services || []).some(function(s) { return s.id === first; })) {
+        return { svc: '', group: '' };
+      }
+      return { svc: first, group: (bits[1] || '').trim() };
     }
 
     async function route() {
       const query = (q.value || '').trim().toLowerCase();
+      const where = currentRoute();
       renderNav(query);
-      const id = currentId();
       closeMenu();
-      if (!id || id === 'overview') {
-        activeService = 'overview';
+      if (!where.svc) {
         destroyUi();
         renderOverview(query);
         return;
       }
-      activeService = id;
-      await renderService(id, query);
+      await renderService(where.svc, where.group, query);
     }
 
     q.addEventListener('input', function() { route(); });
@@ -523,20 +615,22 @@ def catalog_from_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
 def operations_for_spec(spec) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for ep in spec.endpoints:
-        tags = operation_tags(ep.tags, project=spec.title or spec.name)
+        group = subproject_name(ep.path, ep.tags, spec.title or spec.name)
         method = (ep.method or "get").upper()
         rows.append(
             {
                 "method": method,
                 "path": ep.path,
                 "summary": ep.summary or ep.operation_id or "",
-                "tag": tags[0],
+                "tag": group,
+                "group": group,
+                "groupId": _slug(group),
                 "operationId": ep.operation_id or f"{ep.method}_{ep.path}",
             }
         )
     rows.sort(
         key=lambda r: (
-            r["tag"],
+            r["group"],
             _METHOD_ORDER.index(r["method"].lower())
             if r["method"].lower() in _METHOD_ORDER
             else 99,

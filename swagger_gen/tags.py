@@ -23,6 +23,18 @@ _GENERIC_MODULE_TAGS = {
     "Api",
     "API",
 }
+# Path segments that are a version or gateway prefix, not a sub-project.
+_SKIP_SEGMENTS = {
+    "api",
+    "apis",
+    "rest",
+    "v1",
+    "v2",
+    "v3",
+    "v4",
+    "internal",
+    "public",
+}
 
 
 def pretty_tag(raw: str) -> str:
@@ -47,6 +59,25 @@ def pretty_tag(raw: str) -> str:
     if not text:
         return "API"
     return " ".join(part.capitalize() if part.islower() else part for part in text.split())
+
+
+def subproject_name(path: str, tags: list[str] | None, project: str | None = None) -> str:
+    """Resource group under a repo: a real tag, otherwise the first path segment."""
+    proj = pretty_tag(project or "")
+    for tag in tags or []:
+        label = pretty_tag(tag)
+        if not label or label in _GENERIC_MODULE_TAGS:
+            continue
+        if proj and label == proj:
+            continue
+        return label
+    for raw in (path or "").strip("/").split("/"):
+        if not raw or raw.startswith("{") or raw.startswith(":"):
+            continue
+        if raw.lower() in _SKIP_SEGMENTS:
+            continue
+        return pretty_tag(raw)
+    return proj or "API"
 
 
 def operation_tags(tags: list[str] | None, project: str | None = None) -> list[str]:

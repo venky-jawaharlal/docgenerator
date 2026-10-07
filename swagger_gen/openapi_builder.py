@@ -6,7 +6,7 @@ from typing import Any
 
 from .models import ApiSpec, Endpoint, Parameter, SecurityScheme
 from .servers import to_openapi as servers_to_openapi
-from .tags import operation_tags
+from .tags import subproject_name
 
 
 def _param_to_openapi(param: Parameter) -> dict[str, Any]:
@@ -46,7 +46,7 @@ def _operation(ep: Endpoint, project: str | None = None) -> dict[str, Any]:
         op["summary"] = ep.summary
     if ep.description:
         op["description"] = ep.description
-    tags = operation_tags(ep.tags, project=project)
+    tags = [subproject_name(ep.path, ep.tags, project)]
     op["tags"] = tags
     if ep.deprecated:
         op["deprecated"] = True
@@ -170,7 +170,7 @@ def build_openapi(spec: ApiSpec) -> dict[str, Any]:
     tag_nodes: list[dict[str, Any]] = []
     seen: set[str] = set()
     for ep in spec.endpoints:
-        for name in operation_tags(ep.tags, project=spec.title or spec.name):
+        for name in (subproject_name(ep.path, ep.tags, spec.title or spec.name),):
             if name in seen:
                 continue
             seen.add(name)
