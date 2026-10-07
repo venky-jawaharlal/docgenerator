@@ -21,7 +21,7 @@ from ..models import (
     Response,
     SecurityScheme,
 )
-from ._common import humanize, path_param_names, to_openapi_path
+from ._common import humanize, parse_python, path_param_names, to_openapi_path
 from .base import BaseAnalyzer, RepoContext
 
 HTTP_METHODS = {"get", "post", "put", "delete", "patch", "head", "options"}
@@ -50,7 +50,7 @@ class FlaskAnalyzer(BaseAnalyzer):
             ):
                 continue
             try:
-                tree = ast.parse(text)
+                tree = parse_python(text, str(path))
             except SyntaxError:
                 continue
             rel = ctx.rel(path)

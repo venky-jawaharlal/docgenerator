@@ -39,6 +39,7 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
       --ok: #34d399;
       --warn: #fbbf24;
       --main-bg: #f4f6fb;
+      --sidebar-w: 300px;
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
@@ -48,13 +49,36 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
       background: var(--bg);
       color: var(--text);
     }
-    .app { display: flex; height: 100%; min-height: 100vh; }
+    .app { display: flex; height: 100vh; min-height: 0; overflow: hidden; }
     .sidebar {
-      width: 300px; flex: 0 0 300px;
+      width: var(--sidebar-w); flex: 0 0 var(--sidebar-w);
       background: var(--panel);
-      border-right: 1px solid var(--line);
       display: flex; flex-direction: column;
-      min-height: 100vh;
+      height: 100vh; min-height: 0; min-width: 0;
+      overflow: hidden;
+    }
+    .splitter {
+      flex: 0 0 10px; cursor: col-resize; background: #e8edf5;
+      position: relative; z-index: 5; touch-action: none;
+    }
+    .splitter::before {
+      content: ""; position: absolute; top: 50%; left: 3px; width: 4px; height: 36px;
+      transform: translateY(-50%); border-radius: 2px; background: #94a3b8;
+    }
+    .splitter::after { content: none; }
+    .splitter:hover::after, .splitter:focus::after, body.resizing .splitter::after {
+      background: var(--accent);
+    }
+    .splitter:focus { outline: none; }
+    body.resizing { cursor: col-resize; user-select: none; }
+    @media (min-width: 901px) {
+      .sidebar { transition: flex-basis .16s ease, width .16s ease; }
+      body.resizing .sidebar { transition: none; }
+      .app.sidebar-collapsed .sidebar {
+        width: 0; flex-basis: 0; overflow: hidden;
+        visibility: hidden; pointer-events: none;
+      }
+      .app.sidebar-collapsed .splitter { display: none; }
     }
     .brand { padding: 20px 18px 12px; border-bottom: 1px solid var(--line); }
     .brand h1 { margin: 0; font-size: 16px; letter-spacing: .02em; }
@@ -68,9 +92,20 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
     .nav {
       overflow: auto; flex: 1; padding: 6px 10px 16px;
     }
+    .svc-row { display: flex; align-items: flex-start; gap: 2px; }
+    .twist, .twist-spacer {
+      flex: 0 0 22px; width: 22px; height: 22px; margin-top: 8px;
+    }
+    .twist {
+      border: 0; padding: 0; background: transparent; color: var(--muted);
+      border-radius: 6px; cursor: pointer; line-height: 22px; font-size: 16px;
+    }
+    .twist:hover { background: var(--panel-2); color: #fff; }
+    .twist .chev { display: inline-block; transition: transform .15s ease; }
+    .tree.open .twist .chev { transform: rotate(90deg); }
     .nav a.svc {
       display: flex; align-items: flex-start; justify-content: space-between;
-      gap: 8px; text-decoration: none; color: inherit;
+      gap: 8px; text-decoration: none; color: inherit; flex: 1; min-width: 0;
       padding: 10px 10px; border-radius: 8px; margin-bottom: 4px;
     }
     .nav a.svc:hover { background: var(--panel-2); }
@@ -84,7 +119,8 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
     }
     .nav a.svc.active .count { background: #1e3a8a; color: #bbf7d0; }
     .tree { margin-bottom: 8px; }
-    .subs { margin: 0 0 6px 10px; padding-left: 10px; border-left: 1px solid #334155; }
+    .subs { display: none; margin: 0 0 6px 18px; padding-left: 10px; border-left: 1px solid #334155; }
+    .tree.open > .subs { display: block; }
     .nav a.sub {
       display: flex; align-items: center; justify-content: space-between; gap: 8px;
       text-decoration: none; color: #cbd5e1; font-size: 13px;
@@ -102,8 +138,8 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
     }
     .overview-link:hover, .overview-link.active { background: var(--panel-2); }
     .main {
-      flex: 1; background: var(--main-bg); color: #0f172a;
-      overflow: auto; min-width: 0;
+      flex: 1 1 auto; background: var(--main-bg); color: #0f172a;
+      overflow: auto; min-width: 180px; height: 100vh;
     }
     .topbar {
       position: sticky; top: 0; z-index: 4;
@@ -112,8 +148,8 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
       border-bottom: 1px solid #e2e8f0;
     }
     .menu-btn {
-      display: none; border: 1px solid #cbd5e1; background: #fff;
-      border-radius: 8px; padding: 6px 10px; cursor: pointer;
+      display: inline-block; border: 1px solid #cbd5e1; background: #fff;
+      border-radius: 8px; padding: 6px 10px; cursor: pointer; color: #0f172a;
     }
     .crumb { font-size: 14px; font-weight: 650; }
     .crumb span { color: #64748b; font-weight: 500; }
@@ -169,12 +205,14 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
     .swagger-ui .topbar { display: none; }
     .swagger-ui .information-container { padding-top: 8px; }
     @media (max-width: 900px) {
+      .splitter { display: none; }
       .sidebar {
-        position: fixed; z-index: 8; transform: translateX(-105%);
+        position: fixed; z-index: 8; width: min(320px, 86vw); flex: none;
+        transform: translateX(-105%);
         transition: transform .18s ease; height: 100%;
+        border-right: 1px solid var(--line);
       }
       .sidebar.open { transform: none; }
-      .menu-btn { display: inline-block; }
       .backdrop {
         display: none; position: fixed; inset: 0; background: rgba(15,23,42,.45); z-index: 7;
       }
@@ -184,7 +222,7 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
   <div class="backdrop" id="backdrop"></div>
-  <div class="app">
+  <div class="app" id="app">
     <aside class="sidebar" id="sidebar">
       <div class="brand">
         <h1 id="brandTitle">Projects</h1>
@@ -196,9 +234,11 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
       <a class="overview-link active" id="overviewLink" href="#overview">All projects</a>
       <nav class="nav" id="nav"></nav>
     </aside>
+    <div class="splitter" id="splitter" role="separator" aria-orientation="vertical"
+         aria-label="Resize project list" aria-valuemin="200" aria-valuemax="560" aria-valuenow="300" tabindex="0"></div>
     <section class="main">
       <div class="topbar">
-        <button class="menu-btn" id="menuBtn" type="button">Menu</button>
+        <button class="menu-btn" id="menuBtn" type="button" aria-label="Hide projects">Hide</button>
         <div class="crumb" id="crumb">All projects</div>
         <div id="pills"></div>
       </div>
@@ -215,9 +255,51 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
     const pills = document.getElementById('pills');
     const q = document.getElementById('q');
     const sidebar = document.getElementById('sidebar');
+    const splitter = document.getElementById('splitter');
+    const app = document.getElementById('app');
+    const menuBtn = document.getElementById('menuBtn');
     const backdrop = document.getElementById('backdrop');
     const overviewLink = document.getElementById('overviewLink');
     let ui = null;
+    const STORE_W = 'swaggerGen.sidebarWidth';
+    const STORE_C = 'swaggerGen.sidebarCollapsed';
+    const STORE_OPEN = 'swaggerGen.openTrees';
+
+    function isMobile() {
+      return window.matchMedia('(max-width: 900px)').matches;
+    }
+    function loadOpen() {
+      try { return JSON.parse(localStorage.getItem(STORE_OPEN) || '{}') || {}; }
+      catch (e) { return {}; }
+    }
+    function saveOpen(state) {
+      try { localStorage.setItem(STORE_OPEN, JSON.stringify(state)); } catch (e) {}
+    }
+    function treeOpen(svcId, query, route) {
+      if (query) return true;
+      const state = loadOpen();
+      if (Object.prototype.hasOwnProperty.call(state, svcId)) return !!state[svcId];
+      return route.svc === svcId;
+    }
+    function applyWidth(px) {
+      const max = Math.min(560, Math.max(280, Math.round(window.innerWidth * 0.5)));
+      const w = Math.max(200, Math.min(Math.round(px), max));
+      document.documentElement.style.setProperty('--sidebar-w', w + 'px');
+      splitter.setAttribute('aria-valuenow', String(w));
+      splitter.setAttribute('aria-valuemax', String(max));
+      try { localStorage.setItem(STORE_W, String(w)); } catch (e) {}
+      return w;
+    }
+    function syncPaneButton() {
+      if (isMobile()) {
+        menuBtn.textContent = 'Menu';
+        menuBtn.setAttribute('aria-label', 'Open projects');
+        return;
+      }
+      const collapsed = app.classList.contains('sidebar-collapsed');
+      menuBtn.textContent = collapsed ? 'Show' : 'Hide';
+      menuBtn.setAttribute('aria-label', collapsed ? 'Show projects' : 'Hide projects');
+    }
 
     const services = catalog.services || [];
     const brand = services.length === 1
@@ -233,11 +315,75 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
       sidebar.classList.remove('open');
       backdrop.classList.remove('show');
     }
-    document.getElementById('menuBtn').onclick = function() {
-      sidebar.classList.add('open');
-      backdrop.classList.add('show');
+    menuBtn.onclick = function() {
+      if (isMobile()) {
+        sidebar.classList.add('open');
+        backdrop.classList.add('show');
+        return;
+      }
+      app.classList.toggle('sidebar-collapsed');
+      try {
+        localStorage.setItem(STORE_C, app.classList.contains('sidebar-collapsed') ? '1' : '0');
+      } catch (e) {}
+      syncPaneButton();
     };
     backdrop.onclick = closeMenu;
+
+    (function restorePanes() {
+      try {
+        const saved = parseInt(localStorage.getItem(STORE_W) || '', 10);
+        if (saved) applyWidth(saved);
+        else applyWidth(300);
+        if (localStorage.getItem(STORE_C) === '1') app.classList.add('sidebar-collapsed');
+      } catch (e) {
+        applyWidth(300);
+      }
+      syncPaneButton();
+    })();
+
+    let drag = null;
+    splitter.addEventListener('pointerdown', function(ev) {
+      if (isMobile() || app.classList.contains('sidebar-collapsed')) return;
+      drag = { x: ev.clientX, w: sidebar.getBoundingClientRect().width };
+      splitter.setPointerCapture(ev.pointerId);
+      document.body.classList.add('resizing');
+    });
+    splitter.addEventListener('pointermove', function(ev) {
+      if (!drag) return;
+      applyWidth(drag.w + (ev.clientX - drag.x));
+    });
+    function endDrag() {
+      if (!drag) return;
+      drag = null;
+      document.body.classList.remove('resizing');
+    }
+    splitter.addEventListener('pointerup', endDrag);
+    splitter.addEventListener('pointercancel', endDrag);
+    splitter.addEventListener('dblclick', function() { applyWidth(300); });
+    splitter.addEventListener('keydown', function(ev) {
+      const cur = sidebar.getBoundingClientRect().width;
+      if (ev.key === 'ArrowLeft') { ev.preventDefault(); applyWidth(cur - 24); }
+      else if (ev.key === 'ArrowRight') { ev.preventDefault(); applyWidth(cur + 24); }
+      else if (ev.key === 'Home') { ev.preventDefault(); applyWidth(200); }
+      else if (ev.key === 'Enter') { ev.preventDefault(); applyWidth(300); }
+    });
+    window.addEventListener('resize', syncPaneButton);
+
+    nav.addEventListener('click', function(ev) {
+      const btn = ev.target.closest('button.twist');
+      if (!btn || !nav.contains(btn)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const tree = btn.closest('.tree');
+      if (!tree) return;
+      const id = tree.getAttribute('data-id') || '';
+      const open = !tree.classList.contains('open');
+      tree.classList.toggle('open', open);
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      const state = loadOpen();
+      state[id] = open;
+      saveOpen(state);
+    });
 
     function methodOrder(m) {
       const i = ['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'].indexOf(m);
@@ -274,11 +420,21 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
         const n = query
           ? groups.reduce(function(s, g) { return s + g.count; }, 0)
           : svc.endpoint_count;
-        html.push('<div class="tree">');
+        const open = treeOpen(svc.id, query, route) && groups.length > 0;
+        html.push('<div class="tree' + (open ? ' open' : '') + '" data-id="' + svc.id + '">');
+        html.push('<div class="svc-row">');
+        if (groups.length) {
+          html.push(
+            '<button type="button" class="twist" aria-expanded="' + (open ? 'true' : 'false') +
+            '" aria-label="Toggle sub-projects"><span class="chev" aria-hidden="true">›</span></button>'
+          );
+        } else {
+          html.push('<span class="twist-spacer"></span>');
+        }
         html.push(
           '<a class="svc" data-id="' + svc.id + '" href="#' + encodeURIComponent(svc.id) + '">' +
             '<div><div class="name"></div><div class="meta"></div></div>' +
-            '<span class="count">' + n + '</span></a>'
+            '<span class="count">' + n + '</span></a></div>'
         );
         html.push('<div class="subs">');
         groups.forEach(function(g) {
@@ -345,7 +501,7 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
       const parts = [];
       if (!query) {
         parts.push('<div class="hero"><h2>Projects</h2>' +
-          '<p>Each repo lists its sub-projects in the left pane. Open one to try its APIs.</p></div>');
+          '<p>Expand a repo in the left pane to see its sub-projects. Drag the divider to resize the panes, or hide the list from the top bar.</p></div>');
       }
       let any = false;
       (catalog.services || []).forEach(function(svc) {

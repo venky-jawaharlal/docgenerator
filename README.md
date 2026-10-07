@@ -71,7 +71,9 @@ python -m swagger_gen --config config.yaml --serve
 ```
 
 Open `swagger-output/index.html` in a browser. The portal groups endpoints by
-sub-project in a sidebar (search, then open a service to try it). Follow
+sub-project in a sidebar. Repos start collapsed; expand one to see its
+sub-projects. Drag the divider to resize the panes, or hide the list from the
+top bar. Search, then open a service to try it. Follow
 [`TESTING.md`](./TESTING.md) to exercise Try-it-out against the deployed host.
 
 ### CLI options

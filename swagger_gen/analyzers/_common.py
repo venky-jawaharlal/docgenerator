@@ -2,7 +2,22 @@
 
 from __future__ import annotations
 
+import ast
 import re
+import warnings
+
+
+def parse_python(text: str, filename: str = "<unknown>") -> ast.AST:
+    """Parse Python from a scanned repo.
+
+    A string such as ``"\\("`` in that repo warns while it is parsed
+    (``DeprecationWarning`` before 3.12, ``SyntaxWarning`` after). ``ast.parse``
+    labels the file ``<unknown>`` unless a filename is passed. The scan still
+    succeeds, so those warnings are not printed.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r"invalid escape sequence")
+        return ast.parse(text, filename=filename)
 
 
 def join_paths(*parts: str) -> str:
